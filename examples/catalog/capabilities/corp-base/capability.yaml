@@ -1,0 +1,22 @@
+apiVersion: devplane.dev/v1
+kind: Capability
+metadata:
+  id: corp-base
+  version: 1.0.0
+spec:
+  context:
+    plan:
+      include:
+        - instructions.md
+    implement:
+      include:
+        - instructions.md
+  permissions:
+    write:
+      - "src/**"
+      - "tests/**"
+      - "specs/**"
+    shell:
+      allow:
+        - "pytest*"
+        - "uv run pytest*"

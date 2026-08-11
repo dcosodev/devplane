@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - name: Sync locked environment
+        run: uv sync --extra test --locked
+      - name: Run tests
+        run: uv run pytest --cov=devplane --cov-report=term-missing --cov-fail-under=80
+      - name: Compile Python sources
+        run: uv run python -m compileall -q src tests
+      - name: Check CLI
+        run: uv run devplane --help
+      - name: Check generated working-tree whitespace
+        run: git diff --check
+
+  quality:
+    name: Quality and security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - name: Sync locked environment
+        run: uv sync --extra test --locked
+      - name: Lint
+        run: uv run ruff check src tests
+      - name: Export locked dependencies for audit
+        run: uv export --quiet --format requirements-txt --no-emit-project --extra test --output-file /tmp/devplane-audit-requirements.txt
+      - name: Audit dependencies
+        run: uv run pip-audit --strict -r /tmp/devplane-audit-requirements.txt
+      - name: Scan source for medium and high severity findings
+        run: uv run bandit -q -r src --severity-level medium
+
+  package:
+    name: Build package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - name: Build distributions
+        run: uv build
+      - name: Check distributions
+        run: |
+          uv sync --extra test --locked
+          uv run twine check dist/*
+      - name: Smoke-test wheel
+        run: |
+          uv venv /tmp/devplane-wheel
+          uv pip install --python /tmp/devplane-wheel/bin/python dist/*.whl
+          /tmp/devplane-wheel/bin/devplane --help

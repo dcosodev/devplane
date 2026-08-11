@@ -1,0 +1,32 @@
+name: Feature request
+description: Propose a focused improvement to DevPlane
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What concrete workflow or safety problem should DevPlane solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe inputs, outputs, approval gates, and failure behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Project constraints
+      options:
+        - label: Spec Kit remains an external dependency.
+          required: true
+        - label: The proposal preserves explicit approvals and fail-closed validation.
+          required: true
