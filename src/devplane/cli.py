@@ -241,6 +241,45 @@ def adapters() -> None:
     )
 
 
+def _snapshot_generated(project: Path) -> dict[Path, bytes]:
+    generated = project / ".devplane" / "generated"
+    if not generated.is_dir():
+        return {}
+    return {
+        path.relative_to(generated): path.read_bytes()
+        for path in generated.rglob("*")
+        if path.is_file()
+    }
+
+
+def _restore_generated(project: Path, snapshot: dict[Path, bytes]) -> None:
+    generated = project / ".devplane" / "generated"
+    if generated.exists():
+        shutil.rmtree(generated)
+    for relative, content in snapshot.items():
+        output = generated / relative
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(content)
+
+
+def _rollback_project_state(
+    project: Path,
+    config_path: Path,
+    original: bytes,
+    generated_snapshot: dict[Path, bytes],
+) -> list[OSError]:
+    errors: list[OSError] = []
+    try:
+        config_path.write_bytes(original)
+    except OSError as exc:
+        errors.append(exc)
+    try:
+        _restore_generated(project, generated_snapshot)
+    except OSError as exc:
+        errors.append(exc)
+    return errors
+
+
 @app.command("runtime")
 def runtime_command(
     adapter: Annotated[str, typer.Argument(help="Agent adapter or none")],
@@ -259,6 +298,7 @@ def runtime_command(
     project = _project(project)
     config_path = project / ".devplane" / "project.yaml"
     original: bytes | None = None
+    generated_snapshot = _snapshot_generated(project)
     try:
         if adapter != "none" and adapter not in list_adapters():
             raise DevPlaneError(f"unsupported agent adapter: {adapter}")
@@ -284,8 +324,14 @@ def runtime_command(
         for command in resolved["spec"]["commands"]:
             write_context_bundle(project, command)
     except (DevPlaneError, OSError, UnicodeError, yaml.YAMLError) as exc:
+        rollback_errors: list[OSError] = []
         if original is not None:
-            config_path.write_bytes(original)
+            rollback_errors = _rollback_project_state(
+                project, config_path, original, generated_snapshot
+            )
+        if rollback_errors:
+            details = "; ".join(str(error) for error in rollback_errors)
+            _fail(DevPlaneError(f"cannot select runtime: {exc}; rollback failed: {details}"))
         error = (
             exc
             if isinstance(exc, DevPlaneError)
@@ -304,6 +350,7 @@ def use_profile(
     project = _project(project)
     config_path = project / ".devplane" / "project.yaml"
     original: bytes | None = None
+    generated_snapshot = _snapshot_generated(project)
     try:
         original = config_path.read_bytes()
         config = yaml.safe_load(original)
@@ -317,8 +364,14 @@ def use_profile(
         for command in resolved["spec"]["commands"]:
             write_context_bundle(project, command)
     except (DevPlaneError, OSError, UnicodeError, yaml.YAMLError) as exc:
+        rollback_errors: list[OSError] = []
         if original is not None:
-            config_path.write_bytes(original)
+            rollback_errors = _rollback_project_state(
+                project, config_path, original, generated_snapshot
+            )
+        if rollback_errors:
+            details = "; ".join(str(error) for error in rollback_errors)
+            _fail(DevPlaneError(f"cannot select profile: {exc}; rollback failed: {details}"))
         error = (
             exc
             if isinstance(exc, DevPlaneError)

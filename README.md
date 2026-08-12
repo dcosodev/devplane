@@ -267,7 +267,7 @@ The test suite uses temporary repositories and fake agent runners. It does not r
 
 ## Project status
 
-`v0.2.0` is alpha. The catalog schema, runtime adapter API, and CLI may change before `1.0`.
+`v0.2.1` is alpha. The catalog schema, runtime adapter API, and CLI may change before `1.0`.
 
 Implemented now:
 

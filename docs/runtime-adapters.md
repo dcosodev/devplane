@@ -86,4 +86,4 @@ Automated tests verify argv construction, prompt isolation, runtime selection, c
 - runtime permission policy;
 - repository trust and host permissions.
 
-There is no arbitrary plugin API in `0.2.0`. Adding another runtime requires a reviewed adapter and contract tests. Do not claim compatibility with an agent until its non-interactive CLI contract has been verified.
+There is no arbitrary plugin API in `0.2.x`. Adding another runtime requires a reviewed adapter and contract tests. Do not claim compatibility with an agent until its non-interactive CLI contract has been verified.

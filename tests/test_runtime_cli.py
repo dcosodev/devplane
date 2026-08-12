@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 from typer.testing import CliRunner
 
 from devplane.cli import app
+from devplane.cli import write_context_bundle as real_write_context_bundle
 from devplane.pipeline import PipelineRun
 
 runner = CliRunner()
@@ -33,11 +35,17 @@ def _catalog(tmp_path: Path) -> Path:
         "kind: Capability\n"
         "metadata:\n  id: base\n  version: 1.0.0\n"
         "spec:\n"
-        "  context: {}\n"
+        "  context:\n"
+        "    implement:\n"
+        "      include: [instructions.md]\n"
+        "    review:\n"
+        "      include: [review.md]\n"
         "  permissions: {}\n"
         "  validations: [python -m pytest]\n",
         encoding="utf-8",
     )
+    (capability / "instructions.md").write_text("Follow the catalog.\n", encoding="utf-8")
+    (capability / "review.md").write_text("Review the changes.\n", encoding="utf-8")
     return catalog
 
 
@@ -230,6 +238,181 @@ def test_runtime_command_rolls_back_when_sync_fails(tmp_path: Path, monkeypatch)
     assert result.exit_code == 1
     assert "cannot select runtime" in result.output
     assert config_path.read_bytes() == before
+
+
+def _generated_files(generated: Path) -> dict[Path, bytes]:
+    return {
+        path.relative_to(generated): path.read_bytes()
+        for path in generated.rglob("*")
+        if path.is_file()
+    }
+
+
+def _fail_after_one_context_write():
+    calls = 0
+
+    def write_then_fail(project: Path, command: str) -> Path:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("disk full")
+        return real_write_context_bundle(project, command)
+
+    return write_then_fail
+
+
+def test_runtime_command_rolls_back_generated_artifacts_when_context_write_fails(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    catalog = _catalog(tmp_path)
+    initialized = runner.invoke(
+        app,
+        [
+            "init",
+            str(project),
+            "--catalog",
+            str(catalog),
+            "--workflow",
+            "none",
+            "--runtime",
+            "none",
+        ],
+    )
+    assert initialized.exit_code == 0, initialized.output
+    selected = runner.invoke(
+        app,
+        ["use-profile", "general-development", "--project", str(project)],
+    )
+    assert selected.exit_code == 0, selected.output
+    config_path = project / ".devplane" / "project.yaml"
+    generated = project / ".devplane" / "generated"
+    before_config = config_path.read_bytes()
+    before_generated = _generated_files(generated)
+
+    with patch("devplane.cli.write_context_bundle", side_effect=_fail_after_one_context_write()):
+        result = runner.invoke(
+            app,
+            ["runtime", "claude", "--project", str(project)],
+        )
+
+    assert result.exit_code == 1
+    assert config_path.read_bytes() == before_config
+    assert _generated_files(generated) == before_generated
+
+
+def test_use_profile_rolls_back_generated_artifacts_when_context_write_fails(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    catalog = _catalog(tmp_path)
+    initialized = runner.invoke(
+        app,
+        [
+            "init",
+            str(project),
+            "--catalog",
+            str(catalog),
+            "--workflow",
+            "none",
+            "--runtime",
+            "none",
+        ],
+    )
+    assert initialized.exit_code == 0, initialized.output
+    synced = runner.invoke(app, ["sync", "--project", str(project)])
+    assert synced.exit_code == 0, synced.output
+    config_path = project / ".devplane" / "project.yaml"
+    generated = project / ".devplane" / "generated"
+    before_config = config_path.read_bytes()
+    before_generated = _generated_files(generated)
+
+    with patch("devplane.cli.write_context_bundle", side_effect=_fail_after_one_context_write()):
+        result = runner.invoke(
+            app,
+            ["use-profile", "general-development", "--project", str(project)],
+        )
+
+    assert result.exit_code == 1
+    assert config_path.read_bytes() == before_config
+    assert _generated_files(generated) == before_generated
+
+
+def test_runtime_command_reports_original_and_rollback_failures(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    catalog = _catalog(tmp_path)
+    initialized = runner.invoke(
+        app,
+        [
+            "init",
+            str(project),
+            "--catalog",
+            str(catalog),
+            "--workflow",
+            "none",
+            "--runtime",
+            "none",
+        ],
+    )
+    assert initialized.exit_code == 0, initialized.output
+
+    with (
+        patch("devplane.cli.sync_project", side_effect=OSError("disk full")),
+        patch("devplane.cli._restore_generated", side_effect=OSError("restore denied")),
+    ):
+        result = runner.invoke(
+            app,
+            ["runtime", "claude", "--project", str(project)],
+        )
+
+    assert result.exit_code == 1
+    assert "disk full" in result.output
+    assert "rollback failed" in result.output
+    assert "restore denied" in result.output
+
+
+def test_runtime_command_reports_config_rollback_failure_without_hiding_original(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    catalog = _catalog(tmp_path)
+    initialized = runner.invoke(
+        app,
+        [
+            "init",
+            str(project),
+            "--catalog",
+            str(catalog),
+            "--workflow",
+            "none",
+            "--runtime",
+            "none",
+        ],
+    )
+    assert initialized.exit_code == 0, initialized.output
+    config_path = project / ".devplane" / "project.yaml"
+    original_write_bytes = Path.write_bytes
+
+    def fail_config_restore(path: Path, data: bytes) -> int:
+        if path == config_path:
+            raise OSError("config restore denied")
+        return original_write_bytes(path, data)
+
+    with (
+        patch("devplane.cli.sync_project", side_effect=OSError("disk full")),
+        patch.object(Path, "write_bytes", fail_config_restore),
+    ):
+        result = runner.invoke(
+            app,
+            ["runtime", "claude", "--project", str(project)],
+        )
+
+    assert result.exit_code == 1
+    assert "disk full" in result.output
+    assert "rollback failed" in result.output
+    assert "config restore denied" in result.output
 
 
 def test_new_catalog_project_can_use_opencode_without_spec_kit(
