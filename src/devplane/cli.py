@@ -243,13 +243,17 @@ def adapters() -> None:
 
 def _snapshot_generated(project: Path) -> dict[Path, bytes]:
     generated = project / ".devplane" / "generated"
+    if generated.is_symlink():
+        raise DevPlaneError("generated state must not contain symlinks")
     if not generated.is_dir():
         return {}
-    return {
-        path.relative_to(generated): path.read_bytes()
-        for path in generated.rglob("*")
-        if path.is_file()
-    }
+    snapshot: dict[Path, bytes] = {}
+    for path in generated.rglob("*"):
+        if path.is_symlink():
+            raise DevPlaneError("generated state must not contain symlinks")
+        if path.is_file():
+            snapshot[path.relative_to(generated)] = path.read_bytes()
+    return snapshot
 
 
 def _restore_generated(project: Path, snapshot: dict[Path, bytes]) -> None:
@@ -298,8 +302,9 @@ def runtime_command(
     project = _project(project)
     config_path = project / ".devplane" / "project.yaml"
     original: bytes | None = None
-    generated_snapshot = _snapshot_generated(project)
+    generated_snapshot: dict[Path, bytes] = {}
     try:
+        generated_snapshot = _snapshot_generated(project)
         if adapter != "none" and adapter not in list_adapters():
             raise DevPlaneError(f"unsupported agent adapter: {adapter}")
         original = config_path.read_bytes()
@@ -350,8 +355,9 @@ def use_profile(
     project = _project(project)
     config_path = project / ".devplane" / "project.yaml"
     original: bytes | None = None
-    generated_snapshot = _snapshot_generated(project)
+    generated_snapshot: dict[Path, bytes] = {}
     try:
+        generated_snapshot = _snapshot_generated(project)
         original = config_path.read_bytes()
         config = yaml.safe_load(original)
         if not isinstance(config, dict) or not isinstance(config.get("spec"), dict):
