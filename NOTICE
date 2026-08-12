@@ -1,8 +1,8 @@
 DevPlane
 Copyright (c) 2026 Daniel CS
 
-DevPlane is an independent open-source project. It is not affiliated with, endorsed by, or sponsored by GitHub, Nous Research, MiniMax, or their respective affiliates.
+DevPlane is an independent open-source project. It is not affiliated with, endorsed by, or sponsored by GitHub, Nous Research, Anthropic, OpenCode, MiniMax, or their respective affiliates.
 
-GitHub and GitHub Spec Kit are trademarks or projects of GitHub, Inc. Hermes Agent is a project of Nous Research. MiniMax is a trademark of its respective owner. Names are used only to identify external integrations.
+GitHub and GitHub Spec Kit are trademarks or projects of GitHub, Inc. Hermes Agent is a project of Nous Research. Claude and Claude Code are products of Anthropic. OpenCode is an independent project. MiniMax is a trademark of its respective owner. Names are used only to identify external integrations.
 
-DevPlane does not vendor or redistribute GitHub Spec Kit, Hermes Agent, or MiniMax models. Users install and configure those external components separately under their own terms.
+DevPlane does not vendor or redistribute GitHub Spec Kit, Hermes Agent, Claude Code, OpenCode, or model weights. Users install and configure those external components separately under their own terms.

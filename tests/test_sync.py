@@ -58,13 +58,118 @@ def test_manifest_has_exact_digest_and_no_timestamp(tmp_path: Path) -> None:
     assert str(tmp_path) not in rendered
 
 
-def test_sync_rejects_catalog_escape(tmp_path: Path) -> None:
+def test_catalog_profile_resolves_without_workflow_or_agent_runtime(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    catalog = tmp_path / "catalog"
+    quality = catalog / "capabilities" / "python-quality"
+    quality.mkdir()
+    (quality / "instructions.md").write_text("Use pytest and Ruff.\n", encoding="utf-8")
+    (quality / "capability.yaml").write_text(
+        "apiVersion: devplane.dev/v1\n"
+        "kind: Capability\n"
+        "metadata:\n  id: python-quality\n  version: 2.0.0\n"
+        "spec:\n"
+        "  context:\n    implement:\n      include: [instructions.md]\n"
+        "  permissions:\n    write: [src/**, tests/**]\n"
+        "  validations: [uv run pytest, uv run ruff check src tests]\n",
+        encoding="utf-8",
+    )
+    manifest_path = catalog / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["spec"]["capabilities"].append(
+        {"ref": "capabilities/python-quality/capability.yaml"}
+    )
+    manifest["spec"]["profiles"] = [
+        {
+            "id": "python-service",
+            "capabilities": ["corp-base@1.0.0", "python-quality@2.0.0"],
+        }
+    ]
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    config_path = project / ".devplane" / "project.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["spec"]["profile"] = "python-service"
+    config["spec"]["capabilities"] = []
+    config["spec"].pop("workflow")
+    config["spec"].pop("runtime")
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    resolved = build_resolved_manifest(project)
+
+    assert resolved["spec"]["selectedProfile"] == "python-service"
+    assert [item["id"] for item in resolved["spec"]["activeCapabilities"]] == [
+        "corp-base",
+        "python-quality",
+    ]
+    assert resolved["spec"]["validations"] == [
+        "uv run pytest",
+        "uv run ruff check src tests",
+    ]
+    assert "workflow" not in resolved["spec"]
+    assert "runtime" not in resolved["spec"]
+
+
+def test_organizational_catalog_can_live_outside_project_parent(tmp_path: Path) -> None:
+    project = make_project(tmp_path / "workspace")
+    original_catalog = tmp_path / "workspace" / "catalog"
+    organization_catalog = tmp_path / "shared" / "engineering-catalog"
+    organization_catalog.parent.mkdir(parents=True)
+    original_catalog.rename(organization_catalog)
+    config_path = project / ".devplane" / "project.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["spec"]["catalog"]["source"] = str(organization_catalog)
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    resolved = build_resolved_manifest(project)
+
+    assert resolved["spec"]["catalog"]["source"] == str(organization_catalog)
+    assert resolved["spec"]["activeCapabilities"][0]["id"] == "corp-base"
+
+
+def test_catalog_root_symlink_is_rejected(tmp_path: Path) -> None:
+    project = make_project(tmp_path)
+    config_path = project / ".devplane" / "project.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    real_catalog = project / config["spec"]["catalog"]["source"]
+    catalog_link = tmp_path / "catalog-link"
+    catalog_link.symlink_to(real_catalog.resolve(), target_is_directory=True)
+    config["spec"]["catalog"]["source"] = str(catalog_link)
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(DevPlaneError, match="catalog root must not be a symlink"):
+        build_resolved_manifest(project)
+
+
+@pytest.mark.parametrize(
+    ("section", "payload", "message"),
+    [
+        ("workflow", {"engine": "unknown"}, "unsupported workflow engine: unknown"),
+        ("runtime", {"adapter": "unknown"}, "unsupported agent adapter: unknown"),
+    ],
+)
+def test_manifest_rejects_unsupported_execution_plugins(
+    tmp_path: Path,
+    section: str,
+    payload: dict[str, str],
+    message: str,
+) -> None:
+    project = make_project(tmp_path)
+    config_path = project / ".devplane" / "project.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["spec"][section] = payload
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(DevPlaneError, match=message):
+        build_resolved_manifest(project)
+
+
+def test_sync_reports_missing_explicit_external_catalog(tmp_path: Path) -> None:
     project = make_project(tmp_path)
     cfg_path = project / ".devplane" / "project.yaml"
     cfg = yaml.safe_load(cfg_path.read_text())
     cfg["spec"]["catalog"]["source"] = "../../outside"
     cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
-    with pytest.raises(DevPlaneError, match="catalog source"):
+    with pytest.raises(DevPlaneError, match="required file not found"):
         build_resolved_manifest(project)
 
 

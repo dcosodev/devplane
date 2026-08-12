@@ -5,3 +5,22 @@ metadata:
 spec:
   capabilities:
     - ref: capabilities/sample-base/capability.yaml
+    - ref: capabilities/python-quality/capability.yaml
+    - ref: capabilities/web-quality/capability.yaml
+    - ref: capabilities/docs-quality/capability.yaml
+  profiles:
+    - id: general-development
+      capabilities:
+        - sample-base@1.0.0
+    - id: python-service
+      capabilities:
+        - sample-base@1.0.0
+        - python-quality@1.0.0
+    - id: web-frontend
+      capabilities:
+        - sample-base@1.0.0
+        - web-quality@1.0.0
+    - id: documentation
+      capabilities:
+        - sample-base@1.0.0
+        - docs-quality@1.0.0

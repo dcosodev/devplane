@@ -71,10 +71,16 @@ def build_resolved_manifest(project_root: Path) -> dict[str, Any]:
     catalog_cfg = spec.get("catalog")
     if not isinstance(catalog_cfg, dict) or not isinstance(catalog_cfg.get("source"), str):
         raise DevPlaneError("spec.catalog.source is required")
-    catalog_root = _safe_child(
-        project_root.parent,
-        project_root / catalog_cfg["source"],
-        "catalog source",
+    catalog_source = Path(catalog_cfg["source"]).expanduser()
+    unresolved_catalog_root = (
+        catalog_source if catalog_source.is_absolute() else project_root / catalog_source
+    )
+    if unresolved_catalog_root.is_symlink():
+        raise DevPlaneError("catalog root must not be a symlink")
+    catalog_root = (
+        catalog_source.resolve()
+        if catalog_source.is_absolute()
+        else (project_root / catalog_source).resolve()
     )
     catalog_path = catalog_root / "manifest.yaml"
     catalog = _load_yaml(catalog_path)
@@ -102,12 +108,42 @@ def build_resolved_manifest(project_root: Path) -> dict[str, Any]:
         source_files.append(cap_path)
         source_names.append(f"catalog/{cap_path.relative_to(catalog_root).as_posix()}")
 
-    requested = spec.get("capabilities", [])
-    if not isinstance(requested, list) or not all(isinstance(item, str) for item in requested):
+    catalog_spec = catalog.get("spec", {})
+    profiles = catalog_spec.get("profiles", []) if isinstance(catalog_spec, dict) else []
+    if not isinstance(profiles, list):
+        raise DevPlaneError("CapabilityCatalog.spec.profiles must be a list")
+    available_profiles: dict[str, list[str]] = {}
+    for profile in profiles:
+        if not isinstance(profile, dict) or not isinstance(profile.get("id"), str):
+            raise DevPlaneError("catalog profiles require a string id")
+        capabilities = profile.get("capabilities", [])
+        if not isinstance(capabilities, list) or not all(
+            isinstance(item, str) for item in capabilities
+        ):
+            raise DevPlaneError(f"profile {profile['id']} capabilities must be strings")
+        if profile["id"] in available_profiles:
+            raise DevPlaneError(f"duplicate profile id: {profile['id']}")
+        available_profiles[profile["id"]] = capabilities
+
+    selected_profile = spec.get("profile")
+    if selected_profile is not None and not isinstance(selected_profile, str):
+        raise DevPlaneError("spec.profile must be a string")
+    if selected_profile is not None and selected_profile not in available_profiles:
+        raise DevPlaneError(f"unknown profile: {selected_profile}")
+
+    direct_capabilities = spec.get("capabilities", [])
+    if not isinstance(direct_capabilities, list) or not all(
+        isinstance(item, str) for item in direct_capabilities
+    ):
         raise DevPlaneError("spec.capabilities must be a list of strings")
+    profile_capabilities = (
+        available_profiles[selected_profile] if selected_profile is not None else []
+    )
+    requested = list(dict.fromkeys([*profile_capabilities, *direct_capabilities]))
 
     active: list[dict[str, Any]] = []
     commands: dict[str, dict[str, Any]] = {}
+    validations: list[str] = []
     for request in requested:
         cap_id, pinned = _parse_capability_request(request)
         if cap_id not in available:
@@ -120,10 +156,17 @@ def build_resolved_manifest(project_root: Path) -> dict[str, Any]:
         cap_spec = cap.get("spec", {})
         contexts = cap_spec.get("context", {}) if isinstance(cap_spec, dict) else {}
         permissions = cap_spec.get("permissions", {}) if isinstance(cap_spec, dict) else {}
+        capability_validations = cap_spec.get("validations", []) if isinstance(cap_spec, dict) else []
         if contexts is None:
             contexts = {}
-        if not isinstance(contexts, dict) or not isinstance(permissions, dict):
+        if (
+            not isinstance(contexts, dict)
+            or not isinstance(permissions, dict)
+            or not isinstance(capability_validations, list)
+            or not all(isinstance(item, str) for item in capability_validations)
+        ):
             raise DevPlaneError(f"invalid context or permissions in capability {cap_id}")
+        validations.extend(capability_validations)
         for command, context_cfg in contexts.items():
             if not isinstance(command, str) or not isinstance(context_cfg, dict):
                 raise DevPlaneError(f"invalid context declaration in capability {cap_id}")
@@ -154,12 +197,20 @@ def build_resolved_manifest(project_root: Path) -> dict[str, Any]:
         command["writeScopes"] = sorted(set(command["writeScopes"]))
         command["shellAllow"] = sorted(set(command["shellAllow"]))
 
-    workflow = spec.get("workflow", {})
-    runtime = spec.get("runtime", {})
-    if not isinstance(workflow, dict) or workflow.get("engine") != "speckit":
-        raise DevPlaneError("MVP requires spec.workflow.engine: speckit")
-    if not isinstance(runtime, dict) or runtime.get("agent") != "hermes":
-        raise DevPlaneError("MVP requires spec.runtime.agent: hermes")
+    workflow = spec.get("workflow")
+    runtime = spec.get("runtime")
+    if workflow is not None and (
+        not isinstance(workflow, dict) or not isinstance(workflow.get("engine"), str)
+    ):
+        raise DevPlaneError("spec.workflow.engine must be a string")
+    if workflow is not None and workflow["engine"] != "speckit":
+        raise DevPlaneError(f"unsupported workflow engine: {workflow['engine']}")
+    if runtime is not None and not isinstance(runtime, dict):
+        raise DevPlaneError("spec.runtime must be a mapping")
+    if runtime is not None:
+        runtime_adapter = runtime.get("adapter", runtime.get("agent"))
+        if runtime_adapter not in {"claude", "hermes", "opencode"}:
+            raise DevPlaneError(f"unsupported agent adapter: {runtime_adapter}")
 
     repository_profile = spec.get("repositoryProfile")
     if repository_profile is not None:
@@ -185,6 +236,20 @@ def build_resolved_manifest(project_root: Path) -> dict[str, Any]:
             if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
                 raise DevPlaneError(f"spec.repositoryProfile.{key} must be a list of strings")
 
+    resolved_spec: dict[str, Any] = {
+        "catalog": {"name": catalog.get("metadata", {}).get("name"), "source": catalog_cfg["source"]},
+        "repositoryProfile": repository_profile,
+        "activeCapabilities": sorted(active, key=lambda item: item["id"]),
+        "validations": list(dict.fromkeys(validations)),
+        "commands": dict(sorted(commands.items())),
+    }
+    if selected_profile is not None:
+        resolved_spec["selectedProfile"] = selected_profile
+    if workflow is not None:
+        resolved_spec["workflow"] = workflow
+    if runtime is not None:
+        resolved_spec["runtime"] = runtime
+
     return {
         "apiVersion": "devplane.dev/v1",
         "kind": "ResolvedManifest",
@@ -192,14 +257,7 @@ def build_resolved_manifest(project_root: Path) -> dict[str, Any]:
             "project": project.get("metadata", {}).get("name", project_root.name),
             "sourceHash": _source_hash(source_files, source_names),
         },
-        "spec": {
-            "catalog": {"name": catalog.get("metadata", {}).get("name"), "source": catalog_cfg["source"]},
-            "workflow": {"engine": "speckit", "integration": "hermes"},
-            "runtime": {"agent": "hermes"},
-            "repositoryProfile": repository_profile,
-            "activeCapabilities": sorted(active, key=lambda item: item["id"]),
-            "commands": dict(sorted(commands.items())),
-        },
+        "spec": resolved_spec,
     }
 
 

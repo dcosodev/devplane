@@ -1,7 +1,7 @@
 apiVersion: devplane.dev/v1
 kind: Capability
 metadata:
-  id: sample-base
+  id: docs-quality
   version: 1.0.0
 spec:
   context:
@@ -13,11 +13,9 @@ spec:
         - instructions.md
   permissions:
     write:
-      - "src/**"
-      - "tests/**"
       - "docs/**"
       - "README.md"
-      - "specs/**"
+      - "CHANGELOG.md"
     shell:
       allow:
         - "git diff --check"

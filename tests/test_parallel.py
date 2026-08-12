@@ -49,7 +49,8 @@ def test_build_phase_prompt_contains_governed_contract() -> None:
 
     assert "T012" in prompt
     assert "src/service.py" in prompt
-    assert "MiniMax" in prompt
+    assert "agente escritor" in prompt
+    assert "MiniMax" not in prompt
     assert "AGENTS.md" in prompt
     assert "sha256:abc" in prompt
     assert "commit local" in prompt
