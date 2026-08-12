@@ -115,8 +115,11 @@ def test_new_fails_before_creating_project_when_git_is_missing(tmp_path: Path, m
     assert not project.exists()
 
 
-def test_new_refuses_nonempty_directory(tmp_path: Path) -> None:
+def test_new_refuses_nonempty_directory_before_checking_executables(tmp_path: Path, monkeypatch) -> None:
     catalog = _catalog(tmp_path)
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
     project = tmp_path / "existing"
     project.mkdir()
     (project / "keep.txt").write_text("user data", encoding="utf-8")
@@ -126,3 +129,4 @@ def test_new_refuses_nonempty_directory(tmp_path: Path) -> None:
     assert result.exit_code == 1
     assert "empty" in result.output
     assert (project / "keep.txt").read_text(encoding="utf-8") == "user data"
+    assert sorted(path.name for path in project.iterdir()) == ["keep.txt"]

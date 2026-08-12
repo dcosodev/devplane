@@ -11,6 +11,7 @@ runner = CliRunner()
 def test_init_creates_project_manifest_and_calls_speckit_runner(tmp_path: Path, monkeypatch) -> None:
     calls = []
     monkeypatch.setattr("devplane.commands.run_checked", lambda args, cwd: calls.append((args, cwd)))
+    monkeypatch.setattr("devplane.cli.shutil.which", lambda _: "/test-bin")
     catalog = tmp_path / "catalog"
     (catalog / "capabilities").mkdir(parents=True)
     (catalog / "manifest.yaml").write_text(
@@ -45,6 +46,7 @@ def test_init_formats_local_filesystem_errors(tmp_path: Path, monkeypatch) -> No
 
 def test_init_preserves_existing_hermes_rules_and_adds_contract(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("devplane.commands.run_checked", lambda args, cwd: None)
+    monkeypatch.setattr("devplane.cli.shutil.which", lambda _: "/test-bin")
     catalog = tmp_path / "catalog"
     catalog.mkdir()
     (catalog / "manifest.yaml").write_text(

@@ -201,9 +201,9 @@ def new_project(
     project = _project(project)
     catalog = catalog.expanduser().resolve()
     try:
-        _require_executables("specify", "git")
         if project.exists() and any(project.iterdir()):
             raise DevPlaneError(f"new project directory must be empty: {project}")
+        _require_executables("specify", "git")
         project.mkdir(parents=True, exist_ok=True)
         commands.run_checked(["git", "init", "-b", "main"], project)
         _initialize_project(project, catalog)
