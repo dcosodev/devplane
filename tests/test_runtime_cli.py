@@ -248,6 +248,83 @@ def _generated_files(generated: Path) -> dict[Path, bytes]:
     }
 
 
+def test_runtime_rejects_symlinked_generated_root_without_mutating_project(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    catalog = _catalog(tmp_path)
+    initialized = runner.invoke(
+        app,
+        [
+            "init",
+            str(project),
+            "--catalog",
+            str(catalog),
+            "--workflow",
+            "none",
+            "--runtime",
+            "none",
+        ],
+    )
+    assert initialized.exit_code == 0, initialized.output
+    config_path = project / ".devplane" / "project.yaml"
+    before = config_path.read_bytes()
+    external = tmp_path / "external-generated"
+    external.mkdir()
+    marker = external / "marker.txt"
+    marker.write_text("private\n", encoding="utf-8")
+    generated = project / ".devplane" / "generated"
+    generated.symlink_to(external, target_is_directory=True)
+
+    result = runner.invoke(
+        app,
+        ["runtime", "claude", "--project", str(project)],
+    )
+
+    assert result.exit_code == 1
+    assert "generated state must not contain symlinks" in result.output
+    assert config_path.read_bytes() == before
+    assert marker.read_text(encoding="utf-8") == "private\n"
+
+
+def test_use_profile_rejects_symlink_inside_generated_without_reading_target(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    catalog = _catalog(tmp_path)
+    initialized = runner.invoke(
+        app,
+        [
+            "init",
+            str(project),
+            "--catalog",
+            str(catalog),
+            "--workflow",
+            "none",
+            "--runtime",
+            "none",
+        ],
+    )
+    assert initialized.exit_code == 0, initialized.output
+    config_path = project / ".devplane" / "project.yaml"
+    before = config_path.read_bytes()
+    generated = project / ".devplane" / "generated"
+    generated.mkdir(parents=True)
+    external = tmp_path / "external.txt"
+    external.write_text("private\n", encoding="utf-8")
+    (generated / "linked.txt").symlink_to(external)
+
+    result = runner.invoke(
+        app,
+        ["use-profile", "general-development", "--project", str(project)],
+    )
+
+    assert result.exit_code == 1
+    assert "generated state must not contain symlinks" in result.output
+    assert config_path.read_bytes() == before
+    assert external.read_text(encoding="utf-8") == "private\n"
+
+
 def _fail_after_one_context_write():
     calls = 0
 

@@ -56,7 +56,7 @@ def test_public_metadata_and_readme_present_agent_neutral_v02x() -> None:
     metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     readme = (root / "README.md").read_text(encoding="utf-8")
 
-    assert metadata["project"]["version"] == "0.2.1"
+    assert metadata["project"]["version"] == "0.2.2"
     assert "organizational capability catalog" in metadata["project"]["description"].lower()
     for adapter in ("Hermes", "Claude Code", "OpenCode"):
         assert adapter in readme
