@@ -173,7 +173,7 @@ A new catalog feature must remain meaningful without a runtime. A new runtime ad
 
 A new workflow producer must output reviewed task artifacts or an equivalent neutral task contract. It must not be embedded into catalog semantics.
 
-The `0.2.0` release includes built-in adapters rather than a plugin API. Arbitrary external adapters remain future work because loading executable plugins expands the trust and compatibility surface.
+The `0.2.x` releases include built-in adapters rather than a plugin API. Arbitrary external adapters remain future work because loading executable plugins expands the trust and compatibility surface.
 
 ## Intentional alpha limitations
 
