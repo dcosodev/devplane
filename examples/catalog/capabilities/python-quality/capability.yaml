@@ -1,7 +1,7 @@
 apiVersion: devplane.dev/v1
 kind: Capability
 metadata:
-  id: sample-base
+  id: python-quality
   version: 1.0.0
 spec:
   context:
@@ -15,11 +15,11 @@ spec:
     write:
       - "src/**"
       - "tests/**"
-      - "docs/**"
-      - "README.md"
-      - "specs/**"
+      - "pyproject.toml"
     shell:
       allow:
-        - "git diff --check"
+        - "uv run pytest*"
+        - "uv run ruff*"
   validations:
-    - "git diff --check"
+    - "uv run pytest"
+    - "uv run ruff check src tests"

@@ -15,6 +15,7 @@ import typer
 import yaml
 
 from . import commands
+from .agent_runtime import list_adapters, runtime_from_manifest
 from .context import build_context_bundle, write_context_bundle
 from .core import DevPlaneError, build_resolved_manifest, sync_project
 from .discovery import discover_repository, write_repository_profile
@@ -43,7 +44,7 @@ from .tasks import parse_tasks_markdown
 from .worktrees import apply_worktree_cleanup, plan_worktree_cleanup
 
 app = typer.Typer(
-    help="Local-first control plane for GitHub Spec Kit and Hermes Agent",
+    help="Local-first organizational catalog and multi-agent development control plane",
     no_args_is_help=True,
 )
 
@@ -153,11 +154,25 @@ def _require_executables(*names: str) -> None:
             raise DevPlaneError(f"required executable not found: {name}")
 
 
-def _initialize_project(project: Path, catalog: Path) -> None:
-    _require_executables("specify")
-    project.mkdir(parents=True, exist_ok=True)
+def _validate_modes(workflow: str, runtime: str) -> None:
+    if workflow not in {"none", "speckit"}:
+        raise DevPlaneError(f"unsupported workflow engine: {workflow}")
+    if runtime != "none" and runtime not in list_adapters():
+        raise DevPlaneError(f"unsupported agent adapter: {runtime}")
+
+
+def _initialize_project(
+    project: Path,
+    catalog: Path,
+    workflow: str = "speckit",
+    runtime: str = "hermes",
+) -> None:
+    _validate_modes(workflow, runtime)
     if not (catalog / "manifest.yaml").is_file():
         raise DevPlaneError(f"catalog manifest not found: {catalog / 'manifest.yaml'}")
+    if workflow == "speckit":
+        _require_executables("specify")
+    project.mkdir(parents=True, exist_ok=True)
     config_dir = project / ".devplane"
     config_dir.mkdir(parents=True, exist_ok=True)
     config = {
@@ -167,35 +182,162 @@ def _initialize_project(project: Path, catalog: Path) -> None:
         "spec": {
             "catalog": {"source": os.path.relpath(catalog, project)},
             "capabilities": [],
-            "workflow": {"engine": "speckit", "specifyVersion": f"{SUPPORTED_SPECKIT_PREFIX}x"},
-            "runtime": {"agent": "hermes"},
         },
     }
-    (config_dir / "project.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
-    _ensure_hermes_rules(project)
-    commands.run_checked(["specify", "init", ".", "--integration", "hermes", "--force"], project)
+    if workflow == "speckit":
+        config["spec"]["workflow"] = {
+            "engine": "speckit",
+            "specifyVersion": f"{SUPPORTED_SPECKIT_PREFIX}x",
+        }
+    if runtime != "none":
+        config["spec"]["runtime"] = {"adapter": runtime}
+    (config_dir / "project.yaml").write_text(
+        yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
+    )
+    if workflow == "speckit":
+        _ensure_hermes_rules(project)
+        commands.run_checked(
+            ["specify", "init", ".", "--integration", "hermes", "--force"],
+            project,
+        )
 
 
 @app.command()
 def init(
     project: Annotated[Path, typer.Argument(help="Project directory")],
     catalog: Annotated[Path, typer.Option("--catalog", help="Local capability catalog")],
+    workflow: Annotated[
+        str, typer.Option("--workflow", help="Workflow engine: speckit or none")
+    ] = "speckit",
+    runtime: Annotated[
+        str, typer.Option("--runtime", help="Agent adapter or none")
+    ] = "hermes",
 ) -> None:
-    """Initialize Spec Kit with its native Hermes integration and DevPlane config."""
+    """Initialize a catalog project, optionally with workflow and agent runtime."""
     project = _project(project)
     catalog = catalog.expanduser().resolve()
     try:
-        _initialize_project(project, catalog)
+        _initialize_project(project, catalog, workflow, runtime)
     except (DevPlaneError, OSError) as exc:
         error = exc if isinstance(exc, DevPlaneError) else DevPlaneError(f"cannot initialize project: {exc}")
         _fail(error)
     typer.echo(f"initialized {project}")
 
 
+@app.command()
+def adapters() -> None:
+    """List built-in agent runtime adapters."""
+    typer.echo(
+        yaml.safe_dump(
+            {
+                "adapters": [
+                    {"id": adapter, "executable": adapter}
+                    for adapter in list_adapters()
+                ]
+            },
+            sort_keys=False,
+        ),
+        nl=False,
+    )
+
+
+@app.command("runtime")
+def runtime_command(
+    adapter: Annotated[str, typer.Argument(help="Agent adapter or none")],
+    model: Annotated[
+        str | None, typer.Option("--model", help="Adapter model identifier")
+    ] = None,
+    provider: Annotated[
+        str | None, typer.Option("--provider", help="Adapter provider identifier")
+    ] = None,
+    executable: Annotated[
+        str | None, typer.Option("--executable", help="Executable override")
+    ] = None,
+    project: Annotated[Path, typer.Option("--project", help="Project root")] = Path("."),
+) -> None:
+    """Select an agent adapter without changing the organizational catalog."""
+    project = _project(project)
+    config_path = project / ".devplane" / "project.yaml"
+    original: bytes | None = None
+    try:
+        if adapter != "none" and adapter not in list_adapters():
+            raise DevPlaneError(f"unsupported agent adapter: {adapter}")
+        original = config_path.read_bytes()
+        config = yaml.safe_load(original)
+        if not isinstance(config, dict) or not isinstance(config.get("spec"), dict):
+            raise DevPlaneError("invalid AgentProject while selecting runtime")
+        if adapter == "none":
+            config["spec"].pop("runtime", None)
+        else:
+            selected = {"adapter": adapter}
+            if executable is not None:
+                selected["executable"] = executable
+            if provider is not None:
+                selected["provider"] = provider
+            if model is not None:
+                selected["model"] = model
+            config["spec"]["runtime"] = selected
+        config_path.write_text(
+            yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
+        )
+        resolved = sync_project(project, check=False)
+        for command in resolved["spec"]["commands"]:
+            write_context_bundle(project, command)
+    except (DevPlaneError, OSError, UnicodeError, yaml.YAMLError) as exc:
+        if original is not None:
+            config_path.write_bytes(original)
+        error = (
+            exc
+            if isinstance(exc, DevPlaneError)
+            else DevPlaneError(f"cannot select runtime: {exc}")
+        )
+        _fail(error)
+    typer.echo(f"runtime {adapter}")
+
+
+@app.command("use-profile")
+def use_profile(
+    profile_id: Annotated[str, typer.Argument(help="Catalog profile ID")],
+    project: Annotated[Path, typer.Option("--project", help="Project root")] = Path("."),
+) -> None:
+    """Select a reusable catalog profile and regenerate resolved policy."""
+    project = _project(project)
+    config_path = project / ".devplane" / "project.yaml"
+    original: bytes | None = None
+    try:
+        original = config_path.read_bytes()
+        config = yaml.safe_load(original)
+        if not isinstance(config, dict) or not isinstance(config.get("spec"), dict):
+            raise DevPlaneError("invalid AgentProject while selecting profile")
+        config["spec"]["profile"] = profile_id
+        config_path.write_text(
+            yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
+        )
+        resolved = sync_project(project, check=False)
+        for command in resolved["spec"]["commands"]:
+            write_context_bundle(project, command)
+    except (DevPlaneError, OSError, UnicodeError, yaml.YAMLError) as exc:
+        if original is not None:
+            config_path.write_bytes(original)
+        error = (
+            exc
+            if isinstance(exc, DevPlaneError)
+            else DevPlaneError(f"cannot select profile: {exc}")
+        )
+        _fail(error)
+    typer.echo(f"profile {profile_id}")
+
+
 @app.command("new")
 def new_project(
     project: Annotated[Path, typer.Argument(help="New empty project directory")],
     catalog: Annotated[Path, typer.Option("--catalog", help="Local capability catalog")],
+    workflow: Annotated[
+        str, typer.Option("--workflow", help="Workflow engine: speckit or none")
+    ] = "speckit",
+    runtime: Annotated[
+        str, typer.Option("--runtime", help="Agent adapter or none")
+    ] = "hermes",
 ) -> None:
     """Create a governed greenfield project with a clean Git baseline."""
     project = _project(project)
@@ -203,14 +345,19 @@ def new_project(
     try:
         if project.exists() and any(project.iterdir()):
             raise DevPlaneError(f"new project directory must be empty: {project}")
-        _require_executables("specify", "git")
+        _validate_modes(workflow, runtime)
+        if workflow == "speckit":
+            _require_executables("specify", "git")
+        else:
+            _require_executables("git")
         project.mkdir(parents=True, exist_ok=True)
         commands.run_checked(["git", "init", "-b", "main"], project)
-        _initialize_project(project, catalog)
+        _initialize_project(project, catalog, workflow, runtime)
         resolved = sync_project(project, check=False)
         for command in resolved["spec"]["commands"]:
             write_context_bundle(project, command)
-        _read_integration_state(project)
+        if workflow == "speckit":
+            _read_integration_state(project)
         sensitive = sorted(
             path
             for path in project.rglob("*")
@@ -278,16 +425,32 @@ def sync(
 def validate(
     project: Annotated[Path, typer.Option("--project", help="Project root")] = Path("."),
 ) -> None:
-    """Validate project structure, manifests, and generated drift."""
+    """Validate catalog, generated state, and configured workflow integration."""
     project = _project(project)
-    if not (project / ".specify").is_dir():
-        _fail(DevPlaneError(f"Spec Kit project directory missing: {project / '.specify'}"))
-    if not (project / ".hermes" / "skills").is_dir():
-        _fail(DevPlaneError("Spec Kit Hermes integration marker missing: .hermes/skills"))
     try:
-        _read_integration_state(project)
+        raw = yaml.safe_load(
+            (project / ".devplane" / "project.yaml").read_text(encoding="utf-8")
+        )
+        source_spec = raw.get("spec", {}) if isinstance(raw, dict) else {}
+        source_workflow = (
+            source_spec.get("workflow") if isinstance(source_spec, dict) else None
+        )
+        if isinstance(source_workflow, dict) and source_workflow.get("engine") == "speckit":
+            if not (project / ".specify").is_dir():
+                raise DevPlaneError(
+                    f"Spec Kit project directory missing: {project / '.specify'}"
+                )
+            if not (project / ".hermes" / "skills").is_dir():
+                raise DevPlaneError(
+                    "Spec Kit Hermes integration marker missing: .hermes/skills"
+                )
         resolved = sync_project(project, check=True)
         _verify_contexts(project, resolved)
+        workflow = resolved["spec"].get("workflow")
+        if isinstance(workflow, dict) and workflow.get("engine") == "speckit":
+            _read_integration_state(project)
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        _fail(DevPlaneError(f"cannot validate project: {exc}"))
     except DevPlaneError as exc:
         _fail(exc)
     typer.echo("valid")
@@ -681,7 +844,7 @@ def plan_execution(
             source_tasks=source.relative_to(project).as_posix(),
             manifest_digest=resolved["metadata"]["sourceHash"],
             base_commit=base_commit,
-            validation_commands=validation or [],
+            validation_commands=validation or resolved["spec"].get("validations", []),
         )
         output = project / ".git" / "devplane" / "runs" / effective_run_id / "execution-plan.yaml"
         write_execution_plan(plan, output)
@@ -695,12 +858,12 @@ def plan_execution(
 def implement(
     tasks_file: Annotated[Path | None, typer.Option("--tasks-file", help="Legacy Spec Kit tasks.md inside the project")] = None,
     execution_plan: Annotated[Path | None, typer.Option("--execution-plan", help="Governed execution-plan.yaml created by plan-execution")] = None,
-    parallel: Annotated[bool, typer.Option("--parallel", help="Use isolated MiniMax sessions")] = False,
+    parallel: Annotated[bool, typer.Option("--parallel", help="Use isolated agent sessions")] = False,
     max_agents: Annotated[int, typer.Option("--max-agents", min=1, max=8)] = 3,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Print the execution plan without launching agents")] = False,
     project: Annotated[Path, typer.Option("--project", help="Project root")] = Path("."),
 ) -> None:
-    """Implement Spec Kit tasks with bounded parallel MiniMax sessions."""
+    """Implement governed tasks with bounded parallel agent sessions."""
     if not parallel:
         _fail(DevPlaneError("implement currently requires --parallel"))
     if (tasks_file is None) == (execution_plan is None):
@@ -739,7 +902,13 @@ def implement(
                     )
                 )
                 return
-            pipeline_result = run_execution_pipeline(project, plan, max_agents=max_agents)
+            runtime_config = runtime_from_manifest(resolved)
+            pipeline_result = run_execution_pipeline(
+                project,
+                plan,
+                max_agents=max_agents,
+                runtime_config=runtime_config,
+            )
             result_path = plan_path.parent / "result.json"
             write_pipeline_run(pipeline_result, result_path)
             _update_feature_status(
@@ -755,8 +924,9 @@ def implement(
                         "run_id": pipeline_result.run_id,
                         "recorded_at": datetime.now(UTC).isoformat(),
                         "manifest_digest": resolved["metadata"]["sourceHash"],
-                        "provider": "minimax-oauth",
-                        "model": "MiniMax-M3",
+                        "adapter": runtime_config.adapter,
+                        "provider": runtime_config.provider,
+                        "model": runtime_config.model,
                         **asdict(assignment),
                     },
                 )
@@ -765,12 +935,14 @@ def implement(
                 raise typer.Exit(1)
             return
         assert tasks_file is not None
+        runtime_config = None if dry_run else runtime_from_manifest(resolved)
         result = run_parallel_implementation(
             project,
             tasks_file,
             manifest_digest=resolved["metadata"]["sourceHash"],
             max_agents=max_agents,
             dry_run=dry_run,
+            runtime_config=runtime_config,
         )
     except DevPlaneError as exc:
         _fail(exc)
@@ -789,8 +961,9 @@ def implement(
                     "run_id": result.run_id,
                     "recorded_at": datetime.now(UTC).isoformat(),
                     "manifest_digest": resolved["metadata"]["sourceHash"],
-                    "provider": "minimax-oauth",
-                    "model": "MiniMax-M3",
+                    "adapter": runtime_config.adapter if runtime_config else None,
+                    "provider": runtime_config.provider if runtime_config else None,
+                    "model": runtime_config.model if runtime_config else None,
                     **asdict(phase),
                 },
             )
@@ -905,10 +1078,12 @@ def retry(
         phases = parse_tasks_markdown(source.read_text(encoding="utf-8"))
         if compute_tasks_digest(phases) != plan.tasks_digest:
             raise DevPlaneError("cannot retry after tasks drift")
+        runtime_config = runtime_from_manifest(resolved)
         retried = run_execution_pipeline(
             project,
             plan,
             max_agents=max_agents,
+            runtime_config=runtime_config,
             prior_result=prior,
         )
         write_pipeline_run(retried, state_dir / "result.json")

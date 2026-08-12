@@ -1,7 +1,7 @@
 apiVersion: devplane.dev/v1
 kind: Capability
 metadata:
-  id: sample-base
+  id: web-quality
   version: 1.0.0
 spec:
   context:
@@ -14,12 +14,14 @@ spec:
   permissions:
     write:
       - "src/**"
+      - "app/**"
+      - "components/**"
       - "tests/**"
-      - "docs/**"
-      - "README.md"
-      - "specs/**"
+      - "package.json"
     shell:
       allow:
-        - "git diff --check"
+        - "npm test*"
+        - "npm run lint*"
   validations:
-    - "git diff --check"
+    - "npm test"
+    - "npm run lint"

@@ -1,15 +1,16 @@
 [project]
 name = "devplane"
-version = "0.1.0"
-description = "Local-first control plane for governed AI software delivery with GitHub Spec Kit and Hermes Agent"
+version = "0.2.0"
+description = "Local-first organizational capability catalog and multi-agent development control plane"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "Daniel CS" }]
 keywords = [
   "ai-agents",
+  "capability-catalog",
   "developer-tools",
-  "hermes-agent",
+  "multi-agent",
   "spec-driven-development",
   "spec-kit",
 ]

@@ -13,9 +13,9 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 
+from .agent_runtime import AgentRuntimeConfig, SessionRequest, SessionResult
 from .core import DevPlaneError
 from .execution_plan import ExecutionAssignment, ExecutionPlan
-from .minimax_runner import SessionRequest, SessionResult
 from .worktrees import WorktreeHandle
 
 _SAFE_COMMIT = re.compile(r"^[0-9a-fA-F]{7,64}$")
@@ -123,10 +123,21 @@ def _default_create() -> CreateWorktree:
     return create_worktree
 
 
-def _default_sessions() -> RunSessions:
-    from .minimax_runner import run_sessions
+def _default_sessions(runtime: AgentRuntimeConfig | None = None) -> RunSessions:
+    from .agent_runtime import run_sessions
 
-    return run_sessions
+    if runtime is None:
+        raise DevPlaneError("agent runtime configuration is required for execution")
+
+    def dispatch(requests, max_workers, runner=None):
+        return run_sessions(
+            requests,
+            max_workers=max_workers,
+            runtime=runtime,
+            runner=runner,
+        )
+
+    return dispatch
 
 
 def _default_runner() -> CommandRunner:
@@ -155,7 +166,7 @@ def _assignment_prompt(assignment: ExecutionAssignment, plan: ExecutionPlan) -> 
         "ejecuta cada comando por separado.\n"
         "8. Informa SHA, archivos, comandos, resultados y riesgos."
     )
-    return f"""Trabaja como agente escritor MiniMax dentro de un git worktree aislado.
+    return f"""Trabaja como agente escritor dentro de un git worktree aislado.
 
 Asignación: {assignment.assignment_id}
 Fase: {assignment.phase}
@@ -169,7 +180,7 @@ Validación obligatoria:
 {validation}
 
 Contrato:
-1. Lee AGENTS.md, .hermes.md, spec.md, plan.md y tasks.md aplicables antes de editar.
+1. Lee AGENTS.md, `.devplane/generated/context-implement.md`, spec.md, plan.md y tasks.md aplicables antes de editar.
 2. No escribas fuera de los paths permitidos; DevPlane rechazará el commit.
 3. Sigue TDD y ejecuta la validación indicada.
 4. No modifiques .devplane/, .git/, .hermes/, .specify/ ni specs/.
@@ -242,6 +253,7 @@ def run_execution_pipeline(
     max_agents: int,
     create_fn: CreateWorktree | None = None,
     sessions_fn: RunSessions | None = None,
+    runtime_config: AgentRuntimeConfig | None = None,
     command_runner: CommandRunner | None = None,
     prior_result: PipelineRun | None = None,
 ) -> PipelineRun:
@@ -250,7 +262,7 @@ def run_execution_pipeline(
         raise DevPlaneError("max_agents must be an integer between 1 and 8")
     project = project.expanduser().resolve()
     create = create_fn or _default_create()
-    run_many = sessions_fn or _default_sessions()
+    run_many = sessions_fn or _default_sessions(runtime_config)
     run_command = command_runner or _default_runner()
 
     status = run_command(["git", "status", "--porcelain"], project).stdout
@@ -369,7 +381,7 @@ def run_execution_pipeline(
                     branch=handle.branch,
                     worktree=str(handle.path),
                     session_id=_session_id(f"{session.stdout}\n{session.stderr}") if session else None,
-                    error=(session.error if session else None) or "MiniMax session failed",
+                    error=(session.error if session else None) or "agent session failed",
                 )
                 failed = True
                 continue
@@ -386,7 +398,7 @@ def run_execution_pipeline(
                     worktree=str(handle.path),
                     session_id=sid,
                     output_digest=digest,
-                    error="MiniMax session completed without a valid commit",
+                    error="agent session completed without a valid commit",
                 )
                 failed = True
                 continue
@@ -411,9 +423,9 @@ def run_execution_pipeline(
                     else None
                 )
             if dirty:
-                error = error or "MiniMax left uncommitted worktree changes"
+                error = error or "agent left uncommitted worktree changes"
             if not changed and not assignment.allow_empty_commit:
-                error = error or "MiniMax commit has no changed files"
+                error = error or "agent commit has no changed files"
             if error is None:
                 try:
                     run_command(["git", "diff", "--check", f"{current_base}..{head}"], handle.path)

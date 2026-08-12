@@ -5,228 +5,292 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#project-status)
 
-A local-first control plane for governed, specification-driven AI software delivery with [GitHub Spec Kit](https://github.com/github/spec-kit) and [Hermes Agent](https://hermes-agent.nousresearch.com/docs).
+A local-first organizational capability catalog and multi-agent development control plane.
 
-DevPlane turns approved product artifacts into bounded implementation assignments, runs coding agents in isolated Git worktrees, verifies their commits and tests, and integrates the result only through an explicit fast-forward gate.
+DevPlane lets a team version reusable engineering instructions, permissions, validations, and project profiles independently from the coding agent that applies them. The same resolved catalog can govern Hermes, Claude Code, or OpenCode implementation sessions.
 
-> DevPlane is an independent open-source project. It is not affiliated with or endorsed by GitHub, Nous Research, or MiniMax.
+> DevPlane is an independent open-source project. It is not affiliated with, sponsored by, or endorsed by GitHub, Nous Research, Anthropic, OpenCode, or MiniMax.
 
-## Why DevPlane?
+## What the repository contains
 
-AI coding agents can generate code quickly, but production delivery needs more than generation:
+DevPlane has three explicit layers:
 
-- a reviewed specification before implementation;
-- explicit human approval between phases;
-- immutable task and validation contracts;
-- bounded write scopes for every worker;
-- isolated parallel execution;
-- deterministic failure, retry, and integration behavior;
-- evidence that the final result actually passed its native checks.
+| Layer | Responsibility | Agent-specific? |
+| --- | --- | --- |
+| **Catalog** | Versioned capabilities, profiles, Markdown instructions, write scopes, shell allowlists, and validations | No |
+| **Control plane** | Resolution, approvals, execution plans, Git worktrees, retries, audit records, validation, and integration | No |
+| **Runtime adapters** | Translate a governed assignment into a supported agent CLI invocation | Yes |
 
-DevPlane provides that control layer while leaving Spec Kit and Hermes independently installable and upgradeable.
+GitHub Spec Kit is an optional external producer for `specify → plan → tasks`. DevPlane does not fork or vendor it. The catalog can also be used without Spec Kit and without an agent runtime.
 
-## Delivery flow
+## Catalog
+
+A catalog composes small capabilities into reusable development profiles:
+
+```text
+sample-base + python-quality  → python-service
+sample-base + web-quality     → web-frontend
+sample-base + docs-quality    → documentation
+```
+
+Each capability can contribute:
+
+- instructions included in planning or implementation context;
+- write-scope and shell-command policy data;
+- exact validation commands;
+- an immutable ID and version.
+
+A project selects a profile and can add extra capabilities:
+
+```yaml
+apiVersion: devplane.dev/v1
+kind: AgentProject
+metadata:
+  name: payments-api
+spec:
+  catalog:
+    source: ../engineering-catalog
+  profile: python-service
+  capabilities:
+    - regulated-data@2.0.0
+  runtime:
+    adapter: claude
+    model: sonnet
+```
+
+`devplane sync` resolves that source into deterministic generated state with a source hash. Catalog-only commands never execute catalog scripts or validation commands.
+
+Read [`docs/catalog.md`](docs/catalog.md) for the schema and composition rules.
+
+## Control plane
+
+When execution is enabled, DevPlane turns reviewed task artifacts into bounded assignments:
 
 ```mermaid
 flowchart LR
-    A[Product idea] --> B[Spec Kit: specify]
-    B --> C{Human approval}
-    C --> D[Spec Kit: plan]
-    D --> E{Human approval}
-    E --> F[Spec Kit: tasks]
-    F --> G{Human approval}
-    G --> H[Git checkpoint + integrity digest]
-    H --> I[Isolated agent worktrees]
-    I --> J[Scope + commit + test verification]
+    A[Catalog profile] --> B[Resolved policy]
+    C[Approved tasks] --> D[Execution plan]
+    B --> D
+    D --> E{Runtime adapter}
+    E --> F[Hermes]
+    E --> G[Claude Code]
+    E --> H[OpenCode]
+    F --> I[Git worktrees]
+    G --> I
+    H --> I
+    I --> J[Commit, scope and validation review]
     J --> K{Explicit integration}
-    K --> L[Fast-forward main]
+    K --> L[Fast-forward project branch]
 ```
 
-DevPlane never calls Spec Kit's monolithic implementation phase in the governed flow. It owns task decomposition, execution contracts, worktree orchestration, validation, retry, and final integration.
+The execution plan binds:
 
-## Core guarantees
+- the approved Git base;
+- task and resolved-manifest digests;
+- assignment dependencies and allowed paths;
+- exact validation commands.
 
-- **Human-gated SDD:** `specify`, `plan`, and `tasks` advance one approved phase at a time.
-- **Immutable execution contract:** plans bind the Git base, source task digest, resolved manifest digest, dependency graph, write scopes, and exact validation commands.
-- **Isolated implementation:** setup, foundation, stories, and polish run in dedicated Git worktrees without moving the project branch.
-- **Bounded concurrency:** independent user stories may run concurrently; dependent assignments wait for verified bases.
-- **Fail-closed review:** unexpected commits, dirty worktrees, out-of-scope paths, governance changes, failed tests, and integration drift block progress.
-- **Selective recovery:** retries reuse only completed assignments whose base and commit remain valid.
-- **Explicit integration:** the final branch moves only after full validation and `git merge --ff-only`.
-- **Safe cleanup:** cleanup is a dry run by default and preserves non-equivalent work.
+The project branch does not move while agents work. DevPlane verifies commits and diffs after execution, validates in isolated worktrees, and integrates only through an explicit fast-forward gate.
 
-## Quick start
+## Runtime adapters
 
-### Prerequisites
+Built-in adapters:
 
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/)
-- Git
-- [GitHub Spec Kit](https://github.com/github/spec-kit) (`specify`)
-- [Hermes Agent](https://hermes-agent.nousresearch.com/docs)
-- a configured Hermes `minimax-oauth` provider with `MiniMax-M3` for the current alpha execution backend
+| Adapter | Executable contract | Model/provider configuration |
+| --- | --- | --- |
+| `hermes` | `hermes chat --query ...` | provider, model, toolsets, max turns |
+| `claude` | `claude --print ...` | model, permission mode, allowed tools |
+| `opencode` | `opencode run ...` | `provider/model`, agent |
 
-Install DevPlane for development:
+List them:
+
+```bash
+uv run devplane adapters
+```
+
+Select a runtime without changing the catalog:
+
+```bash
+uv run devplane runtime hermes \
+  --provider minimax-oauth \
+  --model MiniMax-M3 \
+  --project ../service
+
+uv run devplane runtime claude \
+  --model sonnet \
+  --project ../service
+
+uv run devplane runtime opencode \
+  --model anthropic/claude-sonnet-4-5 \
+  --project ../service
+```
+
+The adapters use argument arrays, never a shell command string. DevPlane does not bypass Claude Code or OpenCode permission controls. Authentication, model availability, account policy, and runtime-level tool permissions remain external responsibilities.
+
+The automated suite verifies adapter selection, argument construction, prompt isolation, and control-plane integration without consuming model tokens. Real paid execution requires the selected CLI to be installed and authenticated.
+
+Read [`docs/runtime-adapters.md`](docs/runtime-adapters.md) before configuring a runtime.
+
+## Quick start: catalog only
+
+Prerequisites: Python 3.11+, Git, and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/dcosodev/devplane.git
 cd devplane
 uv sync --extra test
-uv run devplane --help
+
+uv run devplane init ../service \
+  --catalog ./examples/catalog \
+  --workflow none \
+  --runtime none
+
+uv run devplane use-profile python-service --project ../service
+uv run devplane sync --project ../service
+uv run devplane validate --project ../service
+uv run devplane inspect --project ../service
+uv run devplane context implement --project ../service
 ```
 
-Install the currently verified Spec Kit revision separately:
+This path needs neither Spec Kit nor an agent CLI.
+
+A project can also add an exact capability outside its selected profile:
+
+```bash
+uv run devplane activate sample-base@1.0.0 --project ../service
+```
+
+## Quick start: governed execution with another agent
+
+Create a clean Git project with the OpenCode adapter and no specification engine:
+
+```bash
+uv run devplane new ../service \
+  --catalog ./examples/catalog \
+  --workflow none \
+  --runtime opencode
+
+uv run devplane use-profile python-service --project ../service
+uv run devplane runtime opencode \
+  --model openai/gpt-5.3-codex \
+  --project ../service
+```
+
+Commit the selected profile and generated state, then provide an approved tasks file and create a plan:
+
+```bash
+uv run devplane plan-execution \
+  --tasks-file tasks.md \
+  --run-id service-001 \
+  --project ../service
+
+uv run devplane implement \
+  --parallel \
+  --execution-plan ../service/.git/devplane/runs/service-001/execution-plan.yaml \
+  --dry-run \
+  --project ../service
+```
+
+`python-service` contributes default validation commands. Passing `--validation` explicitly overrides catalog defaults.
+
+Remove `--dry-run` only after reviewing the plan and authenticating the selected runtime. Then inspect and integrate explicitly:
+
+```bash
+uv run devplane run-status service-001 --project ../service
+uv run devplane integrate service-001 --project ../service
+```
+
+## Optional Spec Kit workflow
+
+The human-gated `specify → plan → tasks` path remains available:
 
 ```bash
 uv tool install specify-cli --from git+https://github.com/github/spec-kit.git@f36634b5c1463d3592382e863cd5e7b8a94d9c9a
+
+uv run devplane new ../service \
+  --catalog ./examples/catalog \
+  --workflow speckit \
+  --runtime claude
 ```
 
-Create a governed greenfield project:
+Spec Kit's currently supported phase integration is Hermes-specific, even when a different adapter implements the approved tasks. In other words:
 
-```bash
-uv run devplane new ../meeting-booking \
-  --catalog ./examples/catalog
+- Spec Kit + Hermes can produce the specification, plan, and tasks;
+- DevPlane owns approvals, contracts, worktrees, validation, and integration;
+- Hermes, Claude Code, or OpenCode can execute the implementation assignments.
 
-uv run devplane run \
-  "Build a secure meeting booking service" \
-  --stop-after tasks \
-  --run-id meeting-booking-001 \
-  --project ../meeting-booking
-```
+DevPlane never calls Spec Kit's monolithic implementation phase in the governed flow.
 
-Review each generated artifact before advancing:
-
-```bash
-uv run devplane approve meeting-booking-001 spec  --project ../meeting-booking
-uv run devplane approve meeting-booking-001 plan  --project ../meeting-booking
-uv run devplane approve meeting-booking-001 tasks --project ../meeting-booking
-```
-
-Create the approved checkpoint and execution contract:
-
-```bash
-uv run devplane checkpoint meeting-booking-001 \
-  --tasks-file ../meeting-booking/specs/001-meeting-booking/tasks.md \
-  --validation "uv run pytest" \
-  --project ../meeting-booking
-```
-
-Inspect before spending model calls:
-
-```bash
-uv run devplane implement \
-  --parallel \
-  --execution-plan ../meeting-booking/.git/devplane/runs/meeting-booking-001/execution-plan.yaml \
-  --dry-run \
-  --project ../meeting-booking
-```
-
-Then execute, inspect, and integrate explicitly:
-
-```bash
-uv run devplane implement \
-  --parallel \
-  --max-agents 3 \
-  --execution-plan ../meeting-booking/.git/devplane/runs/meeting-booking-001/execution-plan.yaml \
-  --project ../meeting-booking
-
-uv run devplane run-status meeting-booking-001 --project ../meeting-booking
-uv run devplane integrate meeting-booking-001 --project ../meeting-booking
-```
-
-See [`docs/quickstart.md`](docs/quickstart.md) for the full walkthrough, including retry and cleanup.
-
-## Existing repositories
-
-DevPlane can profile and initialize an existing repository without replacing its stack:
-
-```bash
-uv run devplane init ../existing-service --catalog ./examples/catalog
-uv run devplane sync --project ../existing-service
-uv run devplane profile --project ../existing-service
-uv run devplane profile --approve --project ../existing-service
-```
-
-Repository evidence never activates capabilities automatically. Activation remains an explicit architectural decision:
-
-```bash
-uv run devplane activate sample-base@1.0.0 --project ../existing-service
-```
-
-## Architecture
-
-DevPlane separates four responsibilities:
-
-| Component | Responsibility |
-| --- | --- |
-| GitHub Spec Kit | Specification, planning, and task artifact semantics |
-| DevPlane | Approvals, manifests, contracts, lifecycle, verification, and integration |
-| Hermes Agent | Persistent orchestration runtime |
-| MiniMax-M3 sessions | Bounded implementation workers in isolated worktrees |
-
-Read [`docs/architecture.md`](docs/architecture.md) for state boundaries, execution-plan integrity, cumulative implementation, and the security model.
+See [`docs/quickstart.md`](docs/quickstart.md) for the complete walkthrough.
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `new` | Bootstrap a greenfield Git project with Spec Kit and DevPlane |
-| `init` | Add Spec Kit/Hermes and DevPlane state to an existing repository |
+| `init`, `new` | Initialize an existing or greenfield project, with optional workflow/runtime |
+| `adapters`, `runtime` | List and select agent runtime adapters |
+| `use-profile`, `activate` | Select a catalog profile and add explicit capabilities |
 | `sync`, `validate`, `inspect`, `context` | Resolve and verify deterministic catalog state |
-| `profile`, `activate` | Approve repository evidence and explicit capabilities |
-| `run --stop-after tasks`, `approve` | Execute the human-gated SDD phases |
-| `checkpoint`, `plan-execution` | Create the approved base and immutable execution plan |
-| `implement --parallel` | Run bounded implementation sessions in worktrees |
-| `run-status`, `retry` | Inspect persisted state and recover failed assignments |
+| `profile` | Detect repository evidence and optionally approve it |
+| `run`, `approve` | Optional human-gated Spec Kit phases |
+| `checkpoint`, `plan-execution` | Create an approved base and immutable execution plan |
+| `implement --parallel` | Run bounded assignments with the selected adapter |
+| `run-status`, `retry` | Inspect state and recover failed assignments |
 | `integrate` | Validate and fast-forward the approved result |
 | `cleanup` | Preview or apply safe worktree cleanup |
 
 Run `uv run devplane COMMAND --help` for exact options.
 
-## Development and verification
+## Security boundary
 
-The unit and controlled E2E tests use temporary repositories and fake external executables. They do not require credentials or consume model tokens.
+DevPlane is not an operating-system sandbox.
+
+Git worktrees isolate branches and files, not processes, network access, credentials, or the host filesystem. Agent runtimes can access whatever the host account and their own permission systems allow. DevPlane's write-scope enforcement is authoritative after execution rather than syscall-level prevention.
+
+Catalog YAML and Markdown are configuration and prompt material. Treat external catalogs like code: review them before use. Validation commands are executable contract data and must be trusted. Catalogs are not signed, and local JSONL audit logs are not cryptographically chained.
+
+Read [`SECURITY.md`](SECURITY.md) and [`docs/architecture.md#security-boundary`](docs/architecture.md#security-boundary).
+
+## Development and verification
 
 ```bash
 uv sync --extra test
-uv run pytest
-uv run pytest --cov=devplane --cov-report=term-missing
-uv run python -m compileall -q src tests
+uv run pytest --cov=devplane --cov-report=term-missing --cov-fail-under=80
 uv run ruff check src tests
-uv export --quiet --format requirements-txt --no-emit-project --extra test --output-file /tmp/devplane-audit-requirements.txt
-uv run pip-audit --strict -r /tmp/devplane-audit-requirements.txt
-uv run bandit -q -r src --severity-level medium
+uv run python -m compileall -q src tests
 uv build
-uv run devplane --help
+uv run twine check dist/*
 git diff --check
 ```
 
-## Security boundary
-
-DevPlane is a control plane, not an operating-system sandbox.
-
-It validates inputs, symlink containment, Git identifiers, plan digests, allowed paths, governance paths, commits, worktree cleanliness, and validation results. Agent tools can still access whatever the host account and runtime allow. Write-scope enforcement is authoritative after execution rather than syscall-level prevention.
-
-Do not use untrusted catalogs, prompts, repositories, or validation commands. Review the [remaining limitations](docs/architecture.md#security-boundary) and report vulnerabilities privately through [`SECURITY.md`](SECURITY.md).
+The test suite uses temporary repositories and fake agent runners. It does not require credentials or consume model tokens.
 
 ## Project status
 
-`v0.1.0` is an alpha portfolio release. The core governed flow is implemented and covered by a controlled end-to-end test, but the public API and integration compatibility may still change before `1.0`. See [`CHANGELOG.md`](CHANGELOG.md) for release history.
+`v0.2.0` is alpha. The catalog schema, runtime adapter API, and CLI may change before `1.0`.
 
-Current intentional constraints:
+Implemented now:
 
-- Hermes Agent is the only supported coordinator runtime.
-- The implementation runner is fixed to `minimax-oauth/MiniMax-M3`.
-- Catalog Markdown is trusted prompt material and is not signed.
-- Validation commands are explicit user-approved contract data.
-- Audit JSONL is local and not cryptographically chained.
+- local versioned capabilities and reusable profiles;
+- deterministic composition and generated context;
+- catalog-only operation without Spec Kit or an agent;
+- Hermes, Claude Code, and OpenCode implementation adapters;
+- optional human-gated Spec Kit workflow;
+- integrity-bound plans, worktrees, retries, validation, audit, and integration.
 
-See [open issues](https://github.com/dcosodev/devplane/issues) for planned work.
+Not implemented:
+
+- a hosted catalog registry or remote package resolver;
+- cryptographic catalog signatures;
+- an OS-level sandbox;
+- arbitrary third-party adapter plugins;
+- a non-Hermes Spec Kit phase integration;
+- cryptographically chained audit logs.
 
 ## Contributing
 
-Contributions are welcome. Read [`CONTRIBUTING.md`](CONTRIBUTING.md), the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), and the architecture constraints before opening a pull request.
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md), [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), and [`docs/architecture.md`](docs/architecture.md) before opening a pull request.
 
 ## License and trademarks
 
-DevPlane is available under the [MIT License](LICENSE). Third-party project names identify external integrations only; see [`NOTICE`](NOTICE).
+DevPlane is available under the [MIT License](LICENSE). Third-party names identify external integrations only; see [`NOTICE`](NOTICE).

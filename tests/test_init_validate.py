@@ -29,7 +29,7 @@ def test_init_creates_project_manifest_and_calls_speckit_runner(tmp_path: Path, 
 
 
 def test_init_formats_local_filesystem_errors(tmp_path: Path, monkeypatch) -> None:
-    def fail_initialize(_project: Path, _catalog: Path) -> None:
+    def fail_initialize(_project: Path, _catalog: Path, *_args) -> None:
         raise OSError("permission denied")
 
     monkeypatch.setattr("devplane.cli._initialize_project", fail_initialize)

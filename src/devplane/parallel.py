@@ -10,8 +10,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from .agent_runtime import AgentRuntimeConfig, SessionRequest, SessionResult
 from .core import DevPlaneError
-from .minimax_runner import SessionRequest, SessionResult
 from .tasks import TaskPhase, build_execution_batches, parse_tasks_markdown
 from .worktrees import WorktreeHandle
 
@@ -63,12 +63,12 @@ def _phase_identifier(index: int, phase: TaskPhase) -> str:
 
 
 def build_phase_prompt(phase: TaskPhase, manifest_digest: str) -> str:
-    """Build a self-contained, auditable prompt for one MiniMax writer."""
+    """Build a self-contained, auditable prompt for one agent writer."""
     task_lines = "\n".join(
         f"- {task.task_id}: {task.description}"
         for task in phase.tasks
     )
-    return f"""Trabaja como agente escritor MiniMax dentro de un git worktree aislado.
+    return f"""Trabaja como agente escritor dentro de un git worktree aislado.
 
 Fase asignada: {phase.name}
 Manifiesto DevPlane: {manifest_digest}
@@ -76,7 +76,7 @@ Tareas Spec Kit:
 {task_lines}
 
 Contrato obligatorio:
-1. Lee AGENTS.md, .hermes.md y las instrucciones locales aplicables antes de editar.
+1. Lee AGENTS.md, `.devplane/generated/context-implement.md` y las instrucciones locales aplicables antes de editar.
 2. Limítate estrictamente a esta fase y a los paths mencionados por sus tareas.
 3. Sigue TDD: crea o ajusta una prueba, comprueba el fallo esperado, implementa el mínimo cambio y repite la validación.
 4. No modifiques .devplane/, .specify/ ni specs/; son artefactos de gobierno.
@@ -98,10 +98,21 @@ def _default_create() -> CreateWorktree:
     return create_worktree
 
 
-def _default_sessions() -> RunSessions:
-    from .minimax_runner import run_sessions
+def _default_sessions(runtime: AgentRuntimeConfig | None = None) -> RunSessions:
+    from .agent_runtime import run_sessions
 
-    return run_sessions
+    if runtime is None:
+        raise DevPlaneError("agent runtime configuration is required for execution")
+
+    def dispatch(requests, max_workers, runner=None):
+        return run_sessions(
+            requests,
+            max_workers=max_workers,
+            runtime=runtime,
+            runner=runner,
+        )
+
+    return dispatch
 
 
 def _default_runner() -> CommandRunner:
@@ -119,9 +130,10 @@ def run_parallel_implementation(
     dry_run: bool = False,
     create_fn: CreateWorktree | None = None,
     sessions_fn: RunSessions | None = None,
+    runtime_config: AgentRuntimeConfig | None = None,
     command_runner: CommandRunner | None = None,
 ) -> ParallelRun:
-    """Dispatch Spec Kit phases into isolated MiniMax sessions.
+    """Dispatch task phases into isolated agent sessions.
 
     Setup/foundational/unknown phases are dispatched serially. Contiguous user
     story phases share a bounded parallel batch. Successful sessions must leave
@@ -156,7 +168,7 @@ def run_parallel_implementation(
         )
 
     create = create_fn or _default_create()
-    run_many = sessions_fn or _default_sessions()
+    run_many = sessions_fn or _default_sessions(runtime_config)
     run_command = command_runner or _default_runner()
     base = run_command(["git", "rev-parse", "HEAD"], project).stdout.strip()
     if not re.fullmatch(r"[0-9a-fA-F]{7,64}", base):
@@ -234,7 +246,7 @@ def run_parallel_implementation(
                     status="failed",
                     branch=handle.branch,
                     worktree=str(handle.path),
-                    error="MiniMax session returned no result",
+                    error="agent session returned no result",
                 )
                 continue
             digest = f"sha256:{hashlib.sha256(session.stdout.encode('utf-8')).hexdigest()}"
@@ -249,7 +261,7 @@ def run_parallel_implementation(
                     worktree=str(handle.path),
                     session_id=sid,
                     output_digest=digest,
-                    error=session.error or "MiniMax session failed",
+                    error=session.error or "agent session failed",
                 )
                 continue
 
@@ -264,7 +276,7 @@ def run_parallel_implementation(
                     worktree=str(handle.path),
                     session_id=sid,
                     output_digest=digest,
-                    error="MiniMax session completed without a valid commit",
+                    error="agent session completed without a valid commit",
                 )
                 continue
             results_by_phase[id(phase)] = PhaseRun(
