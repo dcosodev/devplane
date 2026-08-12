@@ -15,6 +15,6 @@ Use it for the public quick start:
 uv run devplane new ../demo-project --catalog ./examples/catalog
 ```
 
-The example capability is intentionally generic. Replace it with reviewed project conventions rather than treating `corp-base` as a production standard.
+The example capability is intentionally generic. Replace it with reviewed project conventions rather than treating `sample-base` as a production standard. Its write and shell patterns are illustrative contract data; they do not provide operating-system isolation.
 
 Catalog Markdown becomes model prompt material. Only use catalogs you trust, review changes before synchronization, and keep executable validation commands outside untrusted catalog content.

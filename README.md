@@ -150,7 +150,7 @@ uv run devplane profile --approve --project ../existing-service
 Repository evidence never activates capabilities automatically. Activation remains an explicit architectural decision:
 
 ```bash
-uv run devplane activate corp-base@1.0.0 --project ../existing-service
+uv run devplane activate sample-base@1.0.0 --project ../existing-service
 ```
 
 ## Architecture

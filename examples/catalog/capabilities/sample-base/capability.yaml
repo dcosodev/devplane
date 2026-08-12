@@ -1,7 +1,7 @@
 apiVersion: devplane.dev/v1
 kind: Capability
 metadata:
-  id: corp-base
+  id: sample-base
   version: 1.0.0
 spec:
   context:

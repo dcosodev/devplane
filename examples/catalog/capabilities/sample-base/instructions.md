@@ -1,4 +1,4 @@
-# Corporate base
+# Sample base
 
 - Prefer small, reversible changes.
 - Write tests before production code.

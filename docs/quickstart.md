@@ -11,7 +11,11 @@ git clone https://github.com/dcosodev/devplane.git
 cd devplane
 uv sync --extra test
 uv run devplane --help
+git config --get user.name
+git config --get user.email
 ```
+
+The two Git configuration checks must return the public identity you want DevPlane to use for its bootstrap commit.
 
 Install the currently verified GitHub Spec Kit revision separately:
 

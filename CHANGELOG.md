@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+
+- Preflight `specify` and Git before creating a new project, avoiding partial bootstrap artifacts when prerequisites are missing.
+- Rename the public example capability to the neutral `sample-base` and clarify that its scopes are illustrative rather than sandbox controls.
+- Ignore local `.env` variants defensively while allowing a reviewed `.env.example`.
+
 ## [0.1.0] - 2026-08-12
 
 ### Added

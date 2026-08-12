@@ -1,7 +1,7 @@
 apiVersion: devplane.dev/v1
 kind: CapabilityCatalog
 metadata:
-  name: example-corporate-catalog
+  name: example-catalog
 spec:
   capabilities:
-    - ref: capabilities/corp-base/capability.yaml
+    - ref: capabilities/sample-base/capability.yaml

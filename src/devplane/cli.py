@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import uuid
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
@@ -146,7 +147,14 @@ def _update_feature_status(project: Path, run_id: str, status: str) -> None:
     write_feature_state(project, replace(state, status=status))
 
 
+def _require_executables(*names: str) -> None:
+    for name in names:
+        if shutil.which(name) is None:
+            raise DevPlaneError(f"required executable not found: {name}")
+
+
 def _initialize_project(project: Path, catalog: Path) -> None:
+    _require_executables("specify")
     project.mkdir(parents=True, exist_ok=True)
     if not (catalog / "manifest.yaml").is_file():
         raise DevPlaneError(f"catalog manifest not found: {catalog / 'manifest.yaml'}")
@@ -193,6 +201,7 @@ def new_project(
     project = _project(project)
     catalog = catalog.expanduser().resolve()
     try:
+        _require_executables("specify", "git")
         if project.exists() and any(project.iterdir()):
             raise DevPlaneError(f"new project directory must be empty: {project}")
         project.mkdir(parents=True, exist_ok=True)

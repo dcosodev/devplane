@@ -87,6 +87,34 @@ def test_new_refuses_sensitive_environment_file_before_baseline(tmp_path: Path, 
     ).returncode != 0
 
 
+def test_new_fails_before_creating_project_when_specify_is_missing(tmp_path: Path, monkeypatch) -> None:
+    catalog = _catalog(tmp_path)
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
+    project = tmp_path / "missing-specify"
+
+    result = runner.invoke(app, ["new", str(project), "--catalog", str(catalog)])
+
+    assert result.exit_code == 1
+    assert "required executable not found: specify" in result.output
+    assert not project.exists()
+
+
+def test_new_fails_before_creating_project_when_git_is_missing(tmp_path: Path, monkeypatch) -> None:
+    catalog = _catalog(tmp_path)
+    _install_specify_stub(tmp_path, monkeypatch)
+    specify_bin = tmp_path / "bin"
+    monkeypatch.setenv("PATH", str(specify_bin))
+    project = tmp_path / "missing-git"
+
+    result = runner.invoke(app, ["new", str(project), "--catalog", str(catalog)])
+
+    assert result.exit_code == 1
+    assert "required executable not found: git" in result.output
+    assert not project.exists()
+
+
 def test_new_refuses_nonempty_directory(tmp_path: Path) -> None:
     catalog = _catalog(tmp_path)
     project = tmp_path / "existing"
