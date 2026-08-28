@@ -294,3 +294,7 @@ Read [`CONTRIBUTING.md`](CONTRIBUTING.md), [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUC
 ## License and trademarks
 
 DevPlane is available under the [MIT License](LICENSE). Third-party names identify external integrations only; see [`NOTICE`](NOTICE).
+
+---
+
+<sub>History squashed at open-sourcing; developed privately before the initial public release.</sub>
