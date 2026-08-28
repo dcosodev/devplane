@@ -1,0 +1,7 @@
+# Canonical identity for this repository's author history.
+# Normalizes the display name and keeps the personal address out of
+# contributor listings. Applied by `git log`, `git shortlog -sne`,
+# `git blame` and most contribution-analysis tooling.
+dcosodev <118436539+dcosodev@users.noreply.github.com> <daniel.c.s@icloud.com>
+dcosodev <118436539+dcosodev@users.noreply.github.com> Daniel CS <118436539+dcosodev@users.noreply.github.com>
+dcosodev <118436539+dcosodev@users.noreply.github.com> DanielCS <118436539+dcosodev@users.noreply.github.com>
