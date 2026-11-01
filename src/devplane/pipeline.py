@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 from .agent_runtime import AgentRuntimeConfig, SessionRequest, SessionResult
 from .core import DevPlaneError
 from .execution_plan import ExecutionAssignment, ExecutionPlan
+from .prompts import load_template, render_template
 from .worktrees import WorktreeHandle
 
 _SAFE_COMMIT = re.compile(r"^[0-9a-fA-F]{7,64}$")
@@ -155,42 +156,22 @@ def _assignment_prompt(assignment: ExecutionAssignment, plan: ExecutionPlan) -> 
     tasks = "\n".join(f"- {task}" for task in assignment.tasks)
     scopes = "\n".join(f"- {path}" for path in assignment.allowed_paths)
     validation = "\n".join(f"- {command}" for command in assignment.validation)
-    final_contract_rules = (
-        "7. Si no hace falta editar, usa `git commit --allow-empty` solo si la tarea es "
-        "exclusivamente de validación y la validación pasó.\n"
-        "8. No combines comandos con operadores de shell (`&&`, `||`, `;`, pipes); "
-        "ejecuta cada comando por separado.\n"
-        "9. Informa SHA, archivos, comandos, resultados y riesgos."
+    final_rules_template = (
+        "assignment_final_rules_validation_only.md"
         if assignment.allow_empty_commit
-        else "7. No combines comandos con operadores de shell (`&&`, `||`, `;`, pipes); "
-        "ejecuta cada comando por separado.\n"
-        "8. Informa SHA, archivos, comandos, resultados y riesgos."
+        else "assignment_final_rules.md"
     )
-    return f"""Trabaja como agente escritor dentro de un git worktree aislado.
-
-Asignación: {assignment.assignment_id}
-Fase: {assignment.phase}
-Tareas:
-{tasks}
-
-Paths de escritura permitidos:
-{scopes}
-
-Validación obligatoria:
-{validation}
-
-Contrato:
-1. Lee AGENTS.md, `.devplane/generated/context-implement.md`, spec.md, plan.md y tasks.md aplicables antes de editar.
-2. No escribas fuera de los paths permitidos; DevPlane rechazará el commit.
-3. Sigue TDD y ejecuta la validación indicada.
-4. No modifiques .devplane/, .git/, .hermes/, .specify/ ni specs/.
-5. No hagas push, deploy, cambios de cuenta ni operaciones Git destructivas.
-6. Crea un único commit local focalizado y deja el worktree limpio.
-{final_contract_rules}
-
-Manifiesto: {plan.manifest_digest}
-Tasks: {plan.tasks_digest}
-"""
+    return render_template(
+        "assignment_prompt.md",
+        assignment_id=assignment.assignment_id,
+        phase=assignment.phase,
+        tasks=tasks,
+        scopes=scopes,
+        validation=validation,
+        final_contract_rules=load_template(final_rules_template).rstrip("\n"),
+        manifest_digest=plan.manifest_digest,
+        tasks_digest=plan.tasks_digest,
+    )
 
 
 def _command_argv(command: str) -> list[str]:

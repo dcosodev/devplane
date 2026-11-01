@@ -88,8 +88,8 @@ if "--version" in sys.argv:
     print("0.19.0")
     raise SystemExit(0)
 prompt = sys.argv[sys.argv.index("--query") + 1]
-assignment = prompt.split("Asignación: ", 1)[1].splitlines()[0]
-scope_block = prompt.split("Paths de escritura permitidos:\\n", 1)[1].split("\\n\\nValidación", 1)[0]
+assignment = prompt.split("Assignment: ", 1)[1].splitlines()[0]
+scope_block = prompt.split("Allowed write paths:\\n", 1)[1].split("\\n\\nRequired validation", 1)[0]
 for line in scope_block.splitlines():
     if not line.startswith("- "):
         continue

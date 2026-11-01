@@ -54,7 +54,7 @@ SUPPORTED_SPECKIT_PREFIX = "0.14."
 HERMES_PROJECT_RULES = f"""{HERMES_RULES_BEGIN}
 # DevPlane runtime contract
 
-This repository uses GitHub Spec Kit as its SDD workflow engine and Hermes as its agent runtime.
+This repository uses GitHub Spec Kit as its SDD workflow engine through the Hermes integration. The implementation runtime is configured separately in `.devplane/project.yaml`.
 
 When executing a `speckit-<command>` skill:
 
