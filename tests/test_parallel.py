@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
+from devplane.agent_runtime import SessionResult
 from devplane.commands import run_checked
 from devplane.core import DevPlaneError
-from devplane.minimax_runner import SessionResult
 from devplane.parallel import (
     build_phase_prompt,
     resolve_tasks_file,
@@ -47,14 +47,14 @@ def test_resolve_tasks_file_rejects_symlink_escape(tmp_path: Path) -> None:
 def test_build_phase_prompt_contains_governed_contract() -> None:
     prompt = build_phase_prompt(_phase(), "sha256:abc")
 
-    assert "T012" in prompt
-    assert "src/service.py" in prompt
-    assert "agente escritor" in prompt
+    assert "- T012: Implement service in src/service.py" in prompt
+    assert "Phase 3: User Story 1" in prompt
+    assert "writer agent" in prompt
     assert "MiniMax" not in prompt
     assert "AGENTS.md" in prompt
     assert "sha256:abc" in prompt
-    assert "commit local" in prompt
-    assert "No hagas push" in prompt
+    assert "local commit" in prompt
+    assert "Do not push" in prompt
 
 
 def test_parallel_implementation_dry_run_does_not_create_worktrees(tmp_path: Path) -> None:

@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
+from devplane.agent_runtime import SessionResult
 from devplane.commands import run_checked
 from devplane.core import DevPlaneError
 from devplane.execution_plan import build_execution_plan
-from devplane.minimax_runner import SessionResult
 from devplane.pipeline import (
     _assignment_prompt,
     integrate_pipeline,
@@ -53,8 +53,8 @@ def test_assignment_prompt_allows_an_auditable_empty_commit_for_validation_only_
     prompt = _assignment_prompt(plan.assignments[0], plan)
 
     assert "git commit --allow-empty" in prompt
-    assert "solo si la tarea es exclusivamente de validación" in prompt
-    assert "No combines comandos con operadores de shell" in prompt
+    assert "only if the task is exclusively validation" in prompt
+    assert "Do not chain commands with shell operators" in prompt
 
     implementation_plan = build_execution_plan(
         parse_tasks_markdown("## Phase 1: Setup\n- [ ] T001 Create src/service.py\n"),

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .agent_runtime import AgentRuntimeConfig, SessionRequest, SessionResult
 from .core import DevPlaneError
+from .prompts import render_template
 from .tasks import TaskPhase, build_execution_batches, parse_tasks_markdown
 from .worktrees import WorktreeHandle
 
@@ -68,23 +69,12 @@ def build_phase_prompt(phase: TaskPhase, manifest_digest: str) -> str:
         f"- {task.task_id}: {task.description}"
         for task in phase.tasks
     )
-    return f"""Trabaja como agente escritor dentro de un git worktree aislado.
-
-Fase asignada: {phase.name}
-Manifiesto DevPlane: {manifest_digest}
-Tareas Spec Kit:
-{task_lines}
-
-Contrato obligatorio:
-1. Lee AGENTS.md, `.devplane/generated/context-implement.md` y las instrucciones locales aplicables antes de editar.
-2. Limítate estrictamente a esta fase y a los paths mencionados por sus tareas.
-3. Sigue TDD: crea o ajusta una prueba, comprueba el fallo esperado, implementa el mínimo cambio y repite la validación.
-4. No modifiques .devplane/, .specify/ ni specs/; son artefactos de gobierno.
-5. No hagas push, despliegues, cambios de cuenta ni operaciones Git destructivas.
-6. Ejecuta la validación nativa del repositorio.
-7. Crea un commit local focalizado antes de terminar.
-8. Devuelve el SHA, archivos modificados, comandos ejecutados, resultados exactos y riesgos.
-"""
+    return render_template(
+        "phase_prompt.md",
+        phase_name=phase.name,
+        manifest_digest=manifest_digest,
+        task_lines=task_lines,
+    )
 
 
 def _session_id(stdout: str) -> str | None:
@@ -137,8 +127,9 @@ def run_parallel_implementation(
 
     Setup/foundational/unknown phases are dispatched serially. Contiguous user
     story phases share a bounded parallel batch. Successful sessions must leave
-    a commit in their worktree; integration is deliberately left to the Hermes
-    coordinator after diff review.
+    a commit in their worktree. This path never merges: the returned phase
+    records name each branch, worktree, and commit so that the operator can
+    review the diffs and integrate them, whichever agent runtime produced them.
     """
     if not isinstance(max_agents, int) or isinstance(max_agents, bool) or not 1 <= max_agents <= 8:
         raise DevPlaneError("max_agents must be an integer between 1 and 8")

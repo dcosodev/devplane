@@ -5,7 +5,7 @@ each holding ``- [ ] TNNN`` task lines that may be flagged with ``[P]`` to
 indicate the task may run in parallel, and ``[USn]`` to identify the user
 story a task belongs to. This module turns that text into typed phase/task
 structures and splits the phases into the execution batches that the
-Hermes runtime consumes: ``Setup``/``Foundational``/``Polish`` phases
+control plane dispatches: ``Setup``/``Foundational``/``Polish`` phases
 must run serially, while consecutive ``User Story`` phases may run in
 parallel as a single batch.
 """

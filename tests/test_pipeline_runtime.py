@@ -60,7 +60,7 @@ def test_assignment_prompt_is_agent_neutral() -> None:
 
     assert "MiniMax" not in prompt
     assert ".hermes.md" not in prompt
-    assert "agente escritor" in prompt
+    assert "writer agent" in prompt
     assert ".devplane/generated/context-implement.md" in prompt
 
 

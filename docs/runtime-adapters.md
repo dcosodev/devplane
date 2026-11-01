@@ -38,6 +38,8 @@ options:
   maxTurns: 80
 ```
 
+These are configurable defaults, not requirements: set `provider` and `model` to use any provider your Hermes installation supports. Other adapters never use them. The separate Spec Kit phase integration in `src/devplane/sdd.py` is not configurable this way and currently pins `minimax-oauth` / `MiniMax-M3`.
+
 The prompt is one argv element. `--source tool` marks sessions as third-party integration work.
 
 ## Claude Code

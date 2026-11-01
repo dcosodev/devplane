@@ -6,6 +6,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+
+- Moved the agent prompts out of `parallel.py` and `pipeline.py` into packaged templates under `devplane/templates`, and translated them to English with the same contract rules.
+- Reworded runtime-agnostic docstrings and the managed Spec Kit rules so they no longer present Hermes as the coordinator or the only runtime.
+- Documented that the Hermes adapter's MiniMax provider and model are overridable defaults.
+
+### Removed
+
+- Removed the unused `devplane.minimax_runner` module. Its runner coverage now targets `agent_runtime`, which all execution paths use.
+
+### Security
+
+- Updated locked development dependencies to resolve known vulnerabilities: certifi 2026.10.23, filelock 4.2.6, msgpack 1.2.4, and urllib3 2.8.0.
+
 ## [0.2.2] - 2026-08-12
 
 ### Security
