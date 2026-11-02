@@ -9,7 +9,7 @@ A local-first organizational capability catalog and multi-agent development cont
 
 DevPlane lets a team version reusable engineering instructions, permissions, validations, and project profiles independently from the coding agent that applies them. The same resolved catalog can govern Hermes, Claude Code, or OpenCode implementation sessions.
 
-> DevPlane is an independent open-source project. It is not affiliated with, sponsored by, or endorsed by GitHub, Nous Research, Anthropic, OpenCode, or MiniMax.
+> DevPlane is an independent open-source project. It is not affiliated with, sponsored by, or endorsed by GitHub, Nous Research, Anthropic, OpenAI, or OpenCode.
 
 ## What the repository contains
 
@@ -75,9 +75,11 @@ flowchart LR
     E --> F[Hermes]
     E --> G[Claude Code]
     E --> H[OpenCode]
+    E --> L[Codex]
     F --> I[Git worktrees]
     G --> I
     H --> I
+    L --> I
     I --> J[Commit, scope and validation review]
     J --> K{Explicit integration}
     K --> L[Fast-forward project branch]
@@ -100,6 +102,7 @@ Built-in adapters:
 | --- | --- | --- |
 | `hermes` | `hermes chat --query ...` | provider, model, toolsets, max turns |
 | `claude` | `claude --print ...` | model, permission mode, allowed tools |
+| `codex` | `codex exec ...` | model, sandbox |
 | `opencode` | `opencode run ...` | `provider/model`, agent |
 
 List them:
@@ -112,8 +115,8 @@ Select a runtime without changing the catalog:
 
 ```bash
 uv run devplane runtime hermes \
-  --provider minimax-oauth \
-  --model MiniMax-M3 \
+  --provider your-provider \
+  --model your-model \
   --project ../service
 
 uv run devplane runtime claude \
@@ -213,11 +216,20 @@ uv run devplane new ../service \
   --runtime claude
 ```
 
-Spec Kit's currently supported phase integration is Hermes-specific, even when a different adapter implements the approved tasks. In other words:
+Spec Kit's phases run through the same agent as the runtime, here Claude Code. Use `--integration` to run them with a different one:
 
-- Spec Kit + Hermes can produce the specification, plan, and tasks;
+```bash
+uv run devplane new ../service \
+  --catalog ./examples/catalog \
+  --runtime opencode \
+  --integration claude
+```
+
+In other words:
+
+- Spec Kit + Claude Code, Codex, Hermes, or OpenCode can produce the specification, plan, and tasks;
 - DevPlane owns approvals, contracts, worktrees, validation, and integration;
-- Hermes, Claude Code, or OpenCode can execute the implementation assignments.
+- any of those agents can execute the implementation assignments.
 
 DevPlane never calls Spec Kit's monolithic implementation phase in the governed flow.
 
@@ -274,7 +286,7 @@ Implemented now:
 - local versioned capabilities and reusable profiles;
 - deterministic composition and generated context;
 - catalog-only operation without Spec Kit or an agent;
-- Hermes, Claude Code, and OpenCode implementation adapters;
+- Claude Code, Codex, Hermes, and OpenCode adapters for implementation and Spec Kit phases;
 - optional human-gated Spec Kit workflow;
 - integrity-bound plans, worktrees, retries, validation, audit, and integration.
 
@@ -284,7 +296,6 @@ Not implemented:
 - cryptographic catalog signatures;
 - an OS-level sandbox;
 - arbitrary third-party adapter plugins;
-- a non-Hermes Spec Kit phase integration;
 - cryptographically chained audit logs.
 
 ## Contributing

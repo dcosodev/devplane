@@ -9,12 +9,15 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
+from devplane.agent_runtime import AgentRuntimeConfig
 from devplane.cli import app
 from devplane.core import DevPlaneError
 from devplane.sdd import (
     FeatureState,
+    PhaseSettings,
     execute_phase,
     load_feature_state,
+    phase_settings,
     write_feature_state,
     write_phase_workflow,
 )
@@ -22,18 +25,32 @@ from devplane.sdd import (
 runner = CliRunner()
 
 
+def _install_integration(project: Path, integration: str) -> None:
+    (project / ".specify").mkdir(exist_ok=True)
+    (project / ".specify" / "integration.json").write_text(
+        json.dumps(
+            {
+                "version": "0.14.5",
+                "installed_integrations": [integration],
+                "default_integration": integration,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_phase_workflow_dispatches_exactly_one_speckit_skill_without_json_mode(tmp_path: Path) -> None:
     path = write_phase_workflow(tmp_path, "feature-1", "plan")
     workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
 
-    assert workflow["workflow"]["description"] == "Invoke only /speckit-plan under DevPlane gates"
+    assert workflow["workflow"]["description"] == "Invoke only speckit.plan under DevPlane gates"
     assert workflow["steps"] == [
         {
             "id": "plan",
-            "type": "prompt",
-            "prompt": "/speckit-plan {{ inputs.spec }}",
+            "type": "command",
+            "command": "speckit.plan",
+            "input": {"args": "{{ inputs.spec }}"},
             "integration": "{{ inputs.integration }}",
-            "model": "MiniMax-M3",
             "timeout": 900,
         }
     ]
@@ -44,6 +61,9 @@ def test_execute_phase_reads_valid_speckit_json_among_streamed_output(
 ) -> None:
     observed_extra_args: list[str | None] = []
     monkeypatch.setenv("SPECKIT_INTEGRATION_HERMES_EXTRA_ARGS", "--provider existing")
+    settings = phase_settings(
+        "hermes", AgentRuntimeConfig("hermes", "hermes", "any-provider", None, {})
+    )
 
     def fake_run(
         args: list[str], cwd: Path, environment: dict[str, str]
@@ -66,12 +86,13 @@ def test_execute_phase_reads_valid_speckit_json_among_streamed_output(
         "feature-streamed",
         "specify",
         "Build a tiny feature",
+        settings=settings,
         command_runner=fake_run,
     )
 
     assert result["run_id"] == "remote-specify"
     assert result["status"] == "completed"
-    assert observed_extra_args == ["--provider minimax-oauth"]
+    assert observed_extra_args == ["--provider any-provider"]
     assert os.environ["SPECKIT_INTEGRATION_HERMES_EXTRA_ARGS"] == "--provider existing"
 
 
@@ -91,6 +112,7 @@ def test_execute_phase_rejects_stream_without_a_completed_speckit_result(tmp_pat
             "feature-invalid-stream",
             "specify",
             "Build a tiny feature",
+            settings=PhaseSettings("claude"),
             command_runner=fake_run,
         )
 
@@ -99,11 +121,14 @@ def test_run_stop_after_tasks_persists_spec_approval_gate(tmp_path: Path, monkey
     from test_sync import make_project
 
     project = make_project(tmp_path)
+    _install_integration(project, "claude")
     assert runner.invoke(app, ["sync", "--project", str(project)]).exit_code == 0
     calls: list[tuple[list[str], Path]] = []
 
     def fake_run(args, cwd, *, environment):
-        assert environment["SPECKIT_INTEGRATION_HERMES_EXTRA_ARGS"] == "--provider minimax-oauth"
+        assert environment["SPECKIT_INTEGRATION_CLAUDE_EXTRA_ARGS"] == (
+            "--permission-mode acceptEdits --allowedTools Read,Edit,Write,Bash"
+        )
         calls.append((args, cwd))
         return subprocess.CompletedProcess(args, 0, stdout='{"run_id":"spec-remote","status":"completed"}\n')
 
@@ -142,11 +167,12 @@ def test_approve_advances_spec_then_plan_then_tasks_without_implement(tmp_path: 
     from test_sync import make_project
 
     project = make_project(tmp_path)
+    _install_integration(project, "claude")
     assert runner.invoke(app, ["sync", "--project", str(project)]).exit_code == 0
     calls: list[list[str]] = []
 
     def fake_run(args, cwd, *, environment):
-        assert environment["SPECKIT_INTEGRATION_HERMES_EXTRA_ARGS"] == "--provider minimax-oauth"
+        assert "SPECKIT_INTEGRATION_CLAUDE_EXTRA_ARGS" in environment
         calls.append(args)
         phase = Path(args[3]).stem.removeprefix("phase-")
         return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"run_id": f"{phase}-remote", "status": "completed"}))
@@ -248,3 +274,77 @@ def test_checkpoint_commits_approved_artifacts_and_creates_execution_plan(tmp_pa
     assert subprocess.run(
         ["git", "status", "--porcelain"], cwd=project, check=True, capture_output=True, text=True
     ).stdout == ""
+
+
+def test_phase_workflow_sets_a_model_only_when_one_is_configured(tmp_path: Path) -> None:
+    unset = yaml.safe_load(write_phase_workflow(tmp_path, "a", "plan").read_text(encoding="utf-8"))
+    chosen = yaml.safe_load(
+        write_phase_workflow(tmp_path, "b", "plan", model="any-model").read_text(encoding="utf-8")
+    )
+
+    assert "model" not in unset["steps"][0]
+    assert chosen["steps"][0]["model"] == "any-model"
+
+
+@pytest.mark.parametrize(
+    ("integration", "extra_args"),
+    [
+        ("claude", ("--permission-mode", "acceptEdits", "--allowedTools", "Read,Edit,Write,Bash")),
+        ("codex", ("--sandbox", "workspace-write")),
+        ("hermes", ()),
+        ("opencode", ()),
+    ],
+)
+def test_phase_settings_default_to_no_model_or_provider(
+    integration: str, extra_args: tuple[str, ...]
+) -> None:
+    assert phase_settings(integration, None) == PhaseSettings(integration, None, extra_args, None)
+
+
+def test_phase_settings_use_the_runtime_when_it_is_the_same_agent() -> None:
+    runtime = AgentRuntimeConfig(
+        "claude", "custom-claude", None, "any-model", {"permissionMode": "plan"}
+    )
+
+    settings = phase_settings("claude", runtime)
+
+    assert settings.model == "any-model"
+    assert settings.executable == "custom-claude"
+    assert settings.extra_args[:2] == ("--permission-mode", "plan")
+
+
+def test_phase_settings_ignore_a_runtime_for_another_agent() -> None:
+    runtime = AgentRuntimeConfig("hermes", "hermes", "any-provider", "any-model", {})
+
+    assert phase_settings("opencode", runtime) == PhaseSettings("opencode")
+
+
+def test_execute_phase_passes_the_integration_executable_and_model(tmp_path: Path) -> None:
+    observed = {}
+
+    def fake_run(args, cwd, *, environment):
+        observed["args"] = args
+        observed["executable"] = environment.get("SPECKIT_INTEGRATION_OPENCODE_EXECUTABLE")
+        return subprocess.CompletedProcess(args, 0, stdout='{"run_id":"r","status":"completed"}\n')
+
+    execute_phase(
+        tmp_path,
+        "feature-1",
+        "plan",
+        "Build it",
+        settings=PhaseSettings("opencode", "any-model", (), "custom-opencode"),
+        command_runner=fake_run,
+    )
+
+    assert "integration=opencode" in observed["args"]
+    assert observed["executable"] == "custom-opencode"
+    workflow = yaml.safe_load(Path(observed["args"][3]).read_text(encoding="utf-8"))
+    assert workflow["steps"][0]["model"] == "any-model"
+
+
+def test_source_names_no_specific_model_provider() -> None:
+    source = Path(__file__).resolve().parents[1] / "src" / "devplane"
+
+    for path in source.rglob("*"):
+        if path.suffix in {".py", ".md"}:
+            assert "minimax" not in path.read_text(encoding="utf-8").lower(), path

@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-from .core import DevPlaneError
+from .core import GOVERNED_ROOTS, DevPlaneError
 from .tasks import TaskPhase, build_execution_batches
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
@@ -20,7 +20,6 @@ _PATH_TOKEN = re.compile(
     r"((?:(?:\.\.?|[A-Za-z0-9_.-]+)/)*"
     r"(?:[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+|[A-Za-z0-9_.-]+/\*\*?))"
 )
-_GOVERNANCE_ROOTS = {".devplane", ".git", ".hermes", ".specify", "specs"}
 _BARE_FILE_SUFFIXES = {
     "bash",
     "c",
@@ -109,7 +108,7 @@ def _safe_relative_path(value: str, *, label: str, governance: bool = False) -> 
         raise DevPlaneError(f"unsafe {label}: {value!r}")
     if ":" in value:
         raise DevPlaneError(f"unsafe {label}: {value!r}")
-    if governance and path.parts[0] in _GOVERNANCE_ROOTS:
+    if governance and path.parts[0] in GOVERNED_ROOTS:
         raise DevPlaneError(f"unsafe {label}: governance path is read-only: {value!r}")
     return path.as_posix()
 
@@ -119,8 +118,25 @@ def _phase_id(index: int, phase: TaskPhase) -> str:
     return f"p{index + 1}-{slug}"[:63].rstrip("-")
 
 
-def _paths_for_phase(phase: TaskPhase) -> tuple[str, ...]:
+def _is_approved_artifact(candidate: str, feature_dir: PurePosixPath) -> bool:
+    path = PurePosixPath(candidate)
+    return (
+        ".." not in path.parts
+        and bool(path.parts)
+        and path.parts[0] in GOVERNED_ROOTS
+        and path.is_relative_to(feature_dir)
+    )
+
+
+def _paths_for_phase(phase: TaskPhase, feature_dir: PurePosixPath) -> tuple[str, ...]:
+    """Return a phase's write scopes.
+
+    Tasks often name the feature's approved documents, such as "follow quickstart.md".
+    Those are reads: they grant no scope, and a change to them is still rejected as a
+    change to a governed path. A phase with only such reads gets no write scope at all.
+    """
     paths: set[str] = set()
+    reads_approved_artifact = False
     unsafe_candidates: list[str] = []
     for task in phase.tasks:
         for match in _PATH_TOKEN.finditer(task.description):
@@ -129,13 +145,16 @@ def _paths_for_phase(phase: TaskPhase) -> tuple[str, ...]:
                 suffix = PurePosixPath(candidate).suffix.removeprefix(".")
                 if suffix not in _BARE_FILE_SUFFIXES:
                     continue
+            if _is_approved_artifact(candidate, feature_dir):
+                reads_approved_artifact = True
+                continue
             try:
                 paths.add(_safe_relative_path(candidate, label="write scope", governance=True))
             except DevPlaneError:
                 unsafe_candidates.append(candidate)
     if unsafe_candidates:
         raise DevPlaneError(f"unsafe write scope: {unsafe_candidates[0]!r}")
-    if not paths:
+    if not paths and not reads_approved_artifact:
         raise DevPlaneError(
             f"phase {phase.name!r} has no writable paths; every assignment requires explicit file boundaries"
         )
@@ -240,15 +259,16 @@ def build_execution_plan(
         mode = "parallel" if len(batch) > 1 else "serial"
         for phase in batch:
             task_ids = tuple(task.task_id for task in phase.tasks)
+            allowed_paths = _paths_for_phase(phase, PurePosixPath(source_tasks).parent)
             assignment = ExecutionAssignment(
                 assignment_id=phase_ids[id(phase)],
                 phase=phase.name,
                 mode=mode,
                 tasks=task_ids,
                 depends_on=previous_batch,
-                allowed_paths=_paths_for_phase(phase),
+                allowed_paths=allowed_paths,
                 validation=tuple(command.strip() for command in validation_commands),
-                allow_empty_commit=_allows_empty_commit(phase),
+                allow_empty_commit=not allowed_paths or _allows_empty_commit(phase),
             )
             batch_assignments.append(assignment)
         if len(batch_assignments) > 1:
@@ -385,7 +405,7 @@ def load_execution_plan(path: Path) -> ExecutionPlan:
         known_tasks.update(assignment.tasks)
         if any(dependency not in known for dependency in assignment.depends_on):
             raise DevPlaneError("execution plan contains an unknown or forward dependency")
-        if not assignment.allowed_paths:
+        if not assignment.allowed_paths and not assignment.allow_empty_commit:
             raise DevPlaneError("execution plan assignment requires allowed paths")
         for scope in assignment.allowed_paths:
             _safe_relative_path(scope, label="write scope", governance=True)

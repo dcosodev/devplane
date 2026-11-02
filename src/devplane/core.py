@@ -6,6 +6,14 @@ from typing import Any
 
 import yaml
 
+SUPPORTED_ADAPTERS = ("claude", "codex", "hermes", "opencode")
+DEFAULT_ADAPTER = "claude"
+# Paths an implementation assignment must not change: DevPlane's own state, Spec Kit's
+# artifacts, and the directories where each agent keeps the installed Spec Kit commands.
+GOVERNED_ROOTS = frozenset(
+    {".agents", ".claude", ".devplane", ".git", ".hermes", ".opencode", ".specify", "specs"}
+)
+
 
 class DevPlaneError(RuntimeError):
     """A deterministic configuration or validation failure."""
@@ -209,7 +217,7 @@ def build_resolved_manifest(project_root: Path) -> dict[str, Any]:
         raise DevPlaneError("spec.runtime must be a mapping")
     if runtime is not None:
         runtime_adapter = runtime.get("adapter", runtime.get("agent"))
-        if runtime_adapter not in {"claude", "hermes", "opencode"}:
+        if runtime_adapter not in SUPPORTED_ADAPTERS:
             raise DevPlaneError(f"unsupported agent adapter: {runtime_adapter}")
 
     repository_profile = spec.get("repositoryProfile")

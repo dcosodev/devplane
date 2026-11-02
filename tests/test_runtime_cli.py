@@ -56,6 +56,7 @@ def test_adapters_command_lists_supported_runtime_contracts() -> None:
     payload = yaml.safe_load(result.output)
     assert [item["id"] for item in payload["adapters"]] == [
         "claude",
+        "codex",
         "hermes",
         "opencode",
     ]

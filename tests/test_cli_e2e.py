@@ -51,16 +51,19 @@ if args and args[0] == "init":
     raise SystemExit(0)
 if args[:2] == ["workflow", "run"]:
     workflow = pathlib.Path(args[2]).read_text()
+    (cwd / ".specify" / "feature.json").write_text("{}")
+    (cwd / ".specify" / "workflows" / "runs" / "stub").mkdir(parents=True, exist_ok=True)
+    (cwd / ".specify" / "workflows" / "runs" / "stub" / "state.json").write_text("{}")
     feature = cwd / "specs" / "001-demo"
     feature.mkdir(parents=True, exist_ok=True)
-    if "/speckit-specify" in workflow:
+    if "speckit.specify" in workflow:
         subprocess.run(["git", "checkout", "-b", "001-demo"], cwd=cwd, check=True, capture_output=True)
         (feature / "spec.md").write_text("# Demo specification\\n")
         phase = "specify"
-    elif "/speckit-plan" in workflow:
+    elif "speckit.plan" in workflow:
         (feature / "plan.md").write_text("# Demo plan\\n")
         phase = "plan"
-    elif "/speckit-tasks" in workflow:
+    elif "speckit.tasks" in workflow:
         (feature / "tasks.md").write_text(
             "## Phase 1: Setup\\n- [ ] T001 Create setup/generated.txt\\n\\n"
             "## Phase 2: Foundational\\n- [ ] T002 Create foundation/generated.txt\\n\\n"
@@ -107,7 +110,7 @@ print(f"session_id: e2e-{assignment}")
 
     created = runner.invoke(
         app,
-        ["new", str(project), "--catalog", str(catalog)],
+        ["new", str(project), "--catalog", str(catalog), "--runtime", "hermes"],
     )
     assert created.exit_code == 0, created.output
 

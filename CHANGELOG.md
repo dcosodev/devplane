@@ -6,11 +6,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- Spec Kit phases can run through Claude Code, Codex, or OpenCode as well as Hermes. `devplane init` and `devplane new` take `--integration`, which defaults to the runtime.
+- Codex runtime adapter (`codex exec`).
+
+### Fixed
+
+- The Claude Code adapter now works. `--allowedTools` consumed the prompt, so every implementation session exited with an error.
+- Execution plans no longer fail when a task names one of its feature's approved documents, such as `specs/001-demo/quickstart.md`. The reference grants no write scope, and changes to that path are still rejected. A phase with only such references gets no write scope and may end with an empty commit.
+- `devplane checkpoint` no longer treats the run state Spec Kit writes (`.specify/feature.json`, `.specify/workflows/runs/`) as an unrelated change. It stays out of Git through `.git/info/exclude`, and any other change still blocks the checkpoint.
+
 ### Changed
 
+- **Breaking:** `devplane init` and `devplane new` now default to `--runtime claude`.
+- **Breaking:** the Hermes adapter and Spec Kit phases no longer default to the `minimax-oauth` provider and `MiniMax-M3` model. Without `provider` and `model`, the agent uses its own configuration. Existing projects that relied on those defaults must set them explicitly.
+- `validate`, `run`, `approve`, and `resume` read the phase agent from `.specify/integration.json`, so existing Hermes projects keep using Hermes.
+- `.agents/`, `.claude/`, and `.opencode/` are now governed paths that implementation assignments cannot change, as `.hermes/` already was.
 - Moved the agent prompts out of `parallel.py` and `pipeline.py` into packaged templates under `devplane/templates`, and translated them to English with the same contract rules.
 - Reworded runtime-agnostic docstrings and the managed Spec Kit rules so they no longer present Hermes as the coordinator or the only runtime.
-- Documented that the Hermes adapter's MiniMax provider and model are overridable defaults.
 
 ### Removed
 
