@@ -175,7 +175,7 @@ A new workflow producer must output reviewed task artifacts or an equivalent neu
 
 The `0.2.x` releases include built-in adapters rather than a plugin API. Arbitrary external adapters remain future work because loading executable plugins expands the trust and compatibility surface.
 
-## Intentional alpha limitations
+## Intentional beta limitations
 
 - local catalogs only; no registry or dependency solver;
 - one version per capability ID in a catalog;
