@@ -3,7 +3,7 @@
 [![CI](https://github.com/dcosodev/devplane/actions/workflows/ci.yml/badge.svg)](https://github.com/dcosodev/devplane/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#project-status)
+[![Status: beta](https://img.shields.io/badge/status-beta-blue.svg)](#project-status)
 
 A local-first organizational capability catalog and multi-agent development control plane.
 
@@ -267,7 +267,7 @@ The test suite uses temporary repositories and fake agent runners. It does not r
 
 ## Project status
 
-`v0.2.2` is alpha. The catalog schema, runtime adapter API, and CLI may change before `1.0`.
+`v0.2.2` is beta. It is in regular use and keeps changing as that use reveals bugs and new needs, so the catalog schema, runtime adapter API, and CLI may change before `1.0`.
 
 Implemented now:
 
