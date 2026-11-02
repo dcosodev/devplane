@@ -25,8 +25,8 @@ def test_runtime_from_manifest_normalizes_legacy_hermes_configuration() -> None:
     assert config == AgentRuntimeConfig(
         adapter="hermes",
         executable="hermes",
-        provider="minimax-oauth",
-        model="MiniMax-M3",
+        provider=None,
+        model=None,
         options={},
     )
 
@@ -63,7 +63,7 @@ def test_runtime_from_manifest_rejects_unsupported_adapter() -> None:
 
 
 def test_builtin_adapters_are_public_and_agent_neutral() -> None:
-    assert list_adapters() == ["claude", "hermes", "opencode"]
+    assert list_adapters() == ["claude", "codex", "hermes", "opencode"]
 
 
 def test_hermes_adapter_builds_configurable_shell_free_argv() -> None:
@@ -98,6 +98,8 @@ def test_claude_adapter_is_noninteractive_without_bypassing_permissions() -> Non
     args = build_agent_args(request, config)
 
     assert args[:2] == ["claude", "--print"]
+    # --allowedTools takes many values: only the separator keeps the prompt out of them.
+    assert args[-2:] == ["--", "implement task"]
     assert args[args.index("--model") + 1] == "sonnet"
     assert args[args.index("--permission-mode") + 1] == "acceptEdits"
     assert "--dangerously-skip-permissions" not in args
@@ -375,3 +377,20 @@ def test_run_sessions_isolates_unexpected_runner_exception() -> None:
     assert results[0].returncode == 1
     assert results[0].error == "unexpected runner error: RuntimeError"
     assert secret not in results[0].error
+
+
+def test_codex_adapter_builds_shell_free_exec_argv() -> None:
+    request = SessionRequest("T1", "Implement T1", Path("/repo"))
+    config = AgentRuntimeConfig("codex", "codex", None, "gpt-test", {})
+
+    assert build_agent_args(request, config) == [
+        "codex", "exec", "--sandbox", "workspace-write", "--model", "gpt-test", "Implement T1",
+    ]
+
+
+def test_codex_adapter_rejects_provider() -> None:
+    request = SessionRequest("T1", "Implement T1", Path("/repo"))
+    config = AgentRuntimeConfig("codex", "codex", "some-provider", None, {})
+
+    with pytest.raises(DevPlaneError, match="does not accept provider"):
+        build_agent_args(request, config)

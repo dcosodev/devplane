@@ -8,11 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from .core import DevPlaneError
+from .core import SUPPORTED_ADAPTERS, DevPlaneError
 
 MIN_WORKERS = 1
 MAX_WORKERS = 8
-SUPPORTED_ADAPTERS = ("claude", "hermes", "opencode")
 
 
 @dataclass(frozen=True)
@@ -72,14 +71,8 @@ def runtime_from_manifest(resolved: dict[str, Any]) -> AgentRuntimeConfig:
         for key, value in options.items()
     ):
         raise DevPlaneError("runtime options must contain scalar values")
-    provider = _string(
-        runtime.get("provider", "minimax-oauth" if adapter == "hermes" else None),
-        "provider",
-    )
-    model = _string(
-        runtime.get("model", "MiniMax-M3" if adapter == "hermes" else None),
-        "model",
-    )
+    provider = _string(runtime.get("provider"), "provider")
+    model = _string(runtime.get("model"), "model")
     return AgentRuntimeConfig(adapter, executable, provider, model, dict(options))
 
 
@@ -115,37 +108,71 @@ def _hermes_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[st
     return args
 
 
-def _claude_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[str]:
+def _claude_permission_args(config: AgentRuntimeConfig) -> list[str]:
     permission_mode = config.options.get("permissionMode", "acceptEdits")
     tools = config.options.get("allowedTools", "Read,Edit,Write,Bash")
     if not isinstance(permission_mode, str) or not isinstance(tools, str):
         raise DevPlaneError("Claude runtime options must be strings")
+    return ["--permission-mode", permission_mode, "--allowedTools", tools]
+
+
+def _claude_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[str]:
     args = [
         config.executable,
         "--print",
         "--output-format",
         "text",
         "--no-session-persistence",
-        "--permission-mode",
-        permission_mode,
-        "--allowedTools",
-        tools,
+        *_claude_permission_args(config),
     ]
+    if config.model:
+        args.extend(["--model", config.model])
+    # --allowedTools takes any number of values, so without the separator it consumes the
+    # prompt and Claude Code exits with "Input must be provided".
+    args.extend(["--", request.prompt])
+    return args
+
+
+def _codex_sandbox_args(config: AgentRuntimeConfig) -> list[str]:
+    sandbox = config.options.get("sandbox", "workspace-write")
+    if not isinstance(sandbox, str) or not sandbox:
+        raise DevPlaneError("Codex runtime option sandbox must be a string")
+    return ["--sandbox", sandbox]
+
+
+def _codex_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[str]:
+    args = [config.executable, "exec", *_codex_sandbox_args(config)]
     if config.model:
         args.extend(["--model", config.model])
     args.append(request.prompt)
     return args
 
 
+def _opencode_agent_args(config: AgentRuntimeConfig) -> list[str]:
+    agent = config.options.get("agent")
+    if agent is None:
+        return []
+    if not isinstance(agent, str) or not agent:
+        raise DevPlaneError("OpenCode runtime option agent must be a string")
+    return ["--agent", agent]
+
+
+def speckit_phase_args(config: AgentRuntimeConfig) -> list[str]:
+    """Flags an agent needs to run a Spec Kit command without a person at the prompt."""
+    if config.adapter == "claude":
+        return _claude_permission_args(config)
+    if config.adapter == "codex":
+        return _codex_sandbox_args(config)
+    if config.adapter == "opencode":
+        return _opencode_agent_args(config)
+    return ["--provider", config.provider] if config.provider else []
+
+
 def _opencode_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[str]:
     args = [config.executable, "run", "--format", "default"]
     if config.model:
         args.extend(["--model", config.model])
-    agent = config.options.get("agent")
-    if agent is not None:
-        if not isinstance(agent, str) or not agent:
-            raise DevPlaneError("OpenCode runtime option agent must be a string")
-        args.extend(["--agent", agent])
+    args.extend(_opencode_agent_args(config))
     args.append(request.prompt)
     return args
 
@@ -154,11 +181,13 @@ def build_agent_args(request: SessionRequest, config: AgentRuntimeConfig) -> lis
     allowed_options = {
         "hermes": {"toolsets", "maxTurns"},
         "claude": {"permissionMode", "allowedTools"},
+        "codex": {"sandbox"},
         "opencode": {"agent"},
     }
     builders = {
         "hermes": _hermes_args,
         "claude": _claude_args,
+        "codex": _codex_args,
         "opencode": _opencode_args,
     }
     builder = builders.get(config.adapter)
@@ -255,4 +284,5 @@ __all__ = [
     "list_adapters",
     "run_sessions",
     "runtime_from_manifest",
+    "speckit_phase_args",
 ]

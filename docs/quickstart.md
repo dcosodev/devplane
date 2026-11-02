@@ -43,7 +43,7 @@ uv run devplane context plan --project ../catalog-demo
 uv run devplane context implement --project ../catalog-demo
 ```
 
-No Spec Kit, Hermes, Claude Code, OpenCode, provider account, or model is required for this path.
+No Spec Kit, Claude Code, Codex, Hermes, OpenCode, provider account, or model is required for this path.
 
 ## 3. Create an executable project
 
@@ -72,8 +72,8 @@ Equivalent selections:
 
 ```bash
 uv run devplane runtime hermes \
-  --provider minimax-oauth \
-  --model MiniMax-M3 \
+  --provider your-provider \
+  --model your-model \
   --project ../meeting-booking
 
 uv run devplane runtime opencode \
@@ -197,7 +197,7 @@ uv run devplane new ../spec-driven-service \
   --runtime opencode
 ```
 
-The currently supported Spec Kit phase integration uses Hermes skills to produce `spec`, `plan`, and `tasks`; OpenCode in this example executes the approved implementation assignments.
+In this example OpenCode produces `spec`, `plan`, and `tasks` through Spec Kit and also executes the approved implementation assignments. Add `--integration claude` to produce them with Claude Code instead.
 
 ```bash
 uv run devplane run \

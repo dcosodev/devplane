@@ -17,7 +17,7 @@ import yaml
 from . import commands
 from .agent_runtime import list_adapters, runtime_from_manifest
 from .context import build_context_bundle, write_context_bundle
-from .core import DevPlaneError, build_resolved_manifest, sync_project
+from .core import DEFAULT_ADAPTER, DevPlaneError, build_resolved_manifest, sync_project
 from .discovery import discover_repository, write_repository_profile
 from .execution_plan import (
     build_execution_plan,
@@ -33,9 +33,12 @@ from .pipeline import (
     write_pipeline_run,
 )
 from .sdd import (
+    SPECKIT_INTEGRATIONS,
     FeatureState,
+    PhaseSettings,
     execute_phase,
     load_feature_state,
+    phase_settings,
     read_feature_request,
     write_feature_request,
     write_feature_state,
@@ -48,15 +51,16 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
-HERMES_RULES_BEGIN = "<!-- BEGIN DEVPLANE MANAGED CONTRACT -->"
-HERMES_RULES_END = "<!-- END DEVPLANE MANAGED CONTRACT -->"
+RULES_BEGIN = "<!-- BEGIN DEVPLANE MANAGED CONTRACT -->"
+RULES_END = "<!-- END DEVPLANE MANAGED CONTRACT -->"
 SUPPORTED_SPECKIT_PREFIX = "0.14."
-HERMES_PROJECT_RULES = f"""{HERMES_RULES_BEGIN}
+SPECKIT_RUN_STATE = ("/.specify/feature.json", "/.specify/workflows/runs/")
+PROJECT_RULES = f"""{RULES_BEGIN}
 # DevPlane runtime contract
 
-This repository uses GitHub Spec Kit as its SDD workflow engine through the Hermes integration. The implementation runtime is configured separately in `.devplane/project.yaml`.
+This repository uses GitHub Spec Kit as its SDD workflow engine. The implementation runtime is configured separately in `.devplane/project.yaml`.
 
-When executing a `speckit-<command>` skill:
+When executing a Spec Kit command such as `speckit-plan`:
 
 1. Read `.devplane/generated/resolved-manifest.yaml` before taking action.
 2. If it exists, read `.devplane/generated/context-<command>.md` before taking action.
@@ -65,7 +69,7 @@ When executing a `speckit-<command>` skill:
 5. Run the repository's native validation before declaring implementation complete.
 
 Generated files under `.devplane/generated/` must be regenerated with `devplane sync`, never edited manually.
-{HERMES_RULES_END}
+{RULES_END}
 """
 
 
@@ -94,17 +98,17 @@ def _verify_contexts(project: Path, resolved: dict) -> None:
         raise DevPlaneError(f"stale generated context detected: {unexpected[0]}")
 
 
-def _ensure_hermes_rules(project: Path) -> None:
-    rules_path = project / ".hermes.md"
+def _ensure_project_rules(project: Path, integration: str) -> None:
+    rules_path = project / SPECKIT_INTEGRATIONS[integration].rules_file
     existing = rules_path.read_text(encoding="utf-8") if rules_path.exists() else ""
-    if HERMES_RULES_BEGIN in existing and HERMES_RULES_END in existing:
-        prefix, remainder = existing.split(HERMES_RULES_BEGIN, 1)
-        _, suffix = remainder.split(HERMES_RULES_END, 1)
-        updated = prefix.rstrip() + "\n\n" + HERMES_PROJECT_RULES.rstrip() + suffix
+    if RULES_BEGIN in existing and RULES_END in existing:
+        prefix, remainder = existing.split(RULES_BEGIN, 1)
+        _, suffix = remainder.split(RULES_END, 1)
+        updated = prefix.rstrip() + "\n\n" + PROJECT_RULES.rstrip() + suffix
     elif existing:
-        updated = existing.rstrip() + "\n\n" + HERMES_PROJECT_RULES
+        updated = existing.rstrip() + "\n\n" + PROJECT_RULES
     else:
-        updated = HERMES_PROJECT_RULES
+        updated = PROJECT_RULES
     rules_path.write_text(updated.rstrip() + "\n", encoding="utf-8")
 
 
@@ -116,16 +120,37 @@ def _read_integration_state(project: Path) -> dict:
         state = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise DevPlaneError(f"invalid Spec Kit integration state: {state_path}") from exc
-    if "hermes" not in state.get("installed_integrations", []):
-        raise DevPlaneError("Spec Kit Hermes integration is not installed")
-    if state.get("default_integration") != "hermes":
-        raise DevPlaneError("Spec Kit default integration is not hermes")
+    integration = state.get("default_integration")
+    if integration not in SPECKIT_INTEGRATIONS:
+        raise DevPlaneError(f"unsupported Spec Kit default integration: {integration!r}")
+    if integration not in state.get("installed_integrations", []):
+        raise DevPlaneError(f"Spec Kit {integration} integration is not installed")
     version = state.get("version")
     if not isinstance(version, str) or not version.startswith(SUPPORTED_SPECKIT_PREFIX):
         raise DevPlaneError(
             f"unsupported Spec Kit integration version {version!r}; expected {SUPPORTED_SPECKIT_PREFIX}x"
         )
     return state
+
+
+def _exclude_speckit_run_state(project: Path) -> None:
+    """Keep Spec Kit's per-run state out of Git status, without touching a tracked file."""
+    info = project / ".git" / "info"
+    if not (project / ".git").is_dir():
+        return
+    info.mkdir(exist_ok=True)
+    exclude = info / "exclude"
+    existing = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+    missing = [entry for entry in SPECKIT_RUN_STATE if entry not in existing.splitlines()]
+    if missing:
+        prefix = existing if not existing or existing.endswith("\n") else f"{existing}\n"
+        exclude.write_text(prefix + "".join(f"{entry}\n" for entry in missing), encoding="utf-8")
+
+
+def _phase_settings(project: Path, resolved: dict) -> PhaseSettings:
+    integration = _read_integration_state(project)["default_integration"]
+    runtime = runtime_from_manifest(resolved) if resolved["spec"].get("runtime") else None
+    return phase_settings(integration, runtime)
 
 
 def _append_audit(project: Path, record: dict) -> None:
@@ -154,20 +179,23 @@ def _require_executables(*names: str) -> None:
             raise DevPlaneError(f"required executable not found: {name}")
 
 
-def _validate_modes(workflow: str, runtime: str) -> None:
+def _validate_modes(workflow: str, runtime: str, integration: str | None = None) -> None:
     if workflow not in {"none", "speckit"}:
         raise DevPlaneError(f"unsupported workflow engine: {workflow}")
     if runtime != "none" and runtime not in list_adapters():
         raise DevPlaneError(f"unsupported agent adapter: {runtime}")
+    if integration is not None and integration not in SPECKIT_INTEGRATIONS:
+        raise DevPlaneError(f"unsupported Spec Kit integration: {integration}")
 
 
 def _initialize_project(
     project: Path,
     catalog: Path,
     workflow: str = "speckit",
-    runtime: str = "hermes",
+    runtime: str = DEFAULT_ADAPTER,
+    integration: str | None = None,
 ) -> None:
-    _validate_modes(workflow, runtime)
+    _validate_modes(workflow, runtime, integration)
     if not (catalog / "manifest.yaml").is_file():
         raise DevPlaneError(f"catalog manifest not found: {catalog / 'manifest.yaml'}")
     if workflow == "speckit":
@@ -195,9 +223,11 @@ def _initialize_project(
         yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
     )
     if workflow == "speckit":
-        _ensure_hermes_rules(project)
+        selected = integration or (DEFAULT_ADAPTER if runtime == "none" else runtime)
+        _ensure_project_rules(project, selected)
+        _exclude_speckit_run_state(project)
         commands.run_checked(
-            ["specify", "init", ".", "--integration", "hermes", "--force"],
+            ["specify", "init", ".", "--integration", selected, "--force"],
             project,
         )
 
@@ -211,13 +241,17 @@ def init(
     ] = "speckit",
     runtime: Annotated[
         str, typer.Option("--runtime", help="Agent adapter or none")
-    ] = "hermes",
+    ] = DEFAULT_ADAPTER,
+    integration: Annotated[
+        str | None,
+        typer.Option("--integration", help="Agent for Spec Kit phases; defaults to the runtime"),
+    ] = None,
 ) -> None:
     """Initialize a catalog project, optionally with workflow and agent runtime."""
     project = _project(project)
     catalog = catalog.expanduser().resolve()
     try:
-        _initialize_project(project, catalog, workflow, runtime)
+        _initialize_project(project, catalog, workflow, runtime, integration)
     except (DevPlaneError, OSError) as exc:
         error = exc if isinstance(exc, DevPlaneError) else DevPlaneError(f"cannot initialize project: {exc}")
         _fail(error)
@@ -396,7 +430,11 @@ def new_project(
     ] = "speckit",
     runtime: Annotated[
         str, typer.Option("--runtime", help="Agent adapter or none")
-    ] = "hermes",
+    ] = DEFAULT_ADAPTER,
+    integration: Annotated[
+        str | None,
+        typer.Option("--integration", help="Agent for Spec Kit phases; defaults to the runtime"),
+    ] = None,
 ) -> None:
     """Create a governed greenfield project with a clean Git baseline."""
     project = _project(project)
@@ -404,14 +442,14 @@ def new_project(
     try:
         if project.exists() and any(project.iterdir()):
             raise DevPlaneError(f"new project directory must be empty: {project}")
-        _validate_modes(workflow, runtime)
+        _validate_modes(workflow, runtime, integration)
         if workflow == "speckit":
             _require_executables("specify", "git")
         else:
             _require_executables("git")
         project.mkdir(parents=True, exist_ok=True)
         commands.run_checked(["git", "init", "-b", "main"], project)
-        _initialize_project(project, catalog, workflow, runtime)
+        _initialize_project(project, catalog, workflow, runtime, integration)
         resolved = sync_project(project, check=False)
         for command in resolved["spec"]["commands"]:
             write_context_bundle(project, command)
@@ -499,9 +537,11 @@ def validate(
                 raise DevPlaneError(
                     f"Spec Kit project directory missing: {project / '.specify'}"
                 )
-            if not (project / ".hermes" / "skills").is_dir():
+            selected = _read_integration_state(project)["default_integration"]
+            commands_dir = SPECKIT_INTEGRATIONS[selected].commands_dir
+            if not (project / commands_dir).is_dir():
                 raise DevPlaneError(
-                    "Spec Kit Hermes integration marker missing: .hermes/skills"
+                    f"Spec Kit {selected} integration marker missing: {commands_dir}"
                 )
         resolved = sync_project(project, check=True)
         _verify_contexts(project, resolved)
@@ -654,12 +694,14 @@ def run(
             if state_path.exists():
                 raise DevPlaneError(f"feature run already exists: {effective_run_id}")
             spec_digest = f"sha256:{hashlib.sha256(spec.encode('utf-8')).hexdigest()}"
+            settings = _phase_settings(project, resolved)
             write_feature_request(project, effective_run_id, spec)
             phase_result = execute_phase(
                 project,
                 effective_run_id,
                 "specify",
                 spec,
+                settings=settings,
                 command_runner=commands.run_checked,
             )
             state = FeatureState(
@@ -675,6 +717,7 @@ def run(
                 {
                     "event": "sdd.phase.completed",
                     "phase": "specify",
+                    "integration": settings.integration,
                     "run_id": effective_run_id,
                     "external_run_id": phase_result["run_id"],
                     "recorded_at": datetime.now(UTC).isoformat(),
@@ -684,11 +727,12 @@ def run(
             )
             typer.echo(json.dumps(state.to_mapping(), indent=2, sort_keys=True))
             return
+        integration = _read_integration_state(project)["default_integration"]
         result = commands.run_checked(
             [
                 "specify", "workflow", "run", "speckit",
                 "--input", f"spec={spec}",
-                "--input", "integration=hermes",
+                "--input", f"integration={integration}",
                 "--json",
             ],
             project,
@@ -704,7 +748,7 @@ def run(
         "manifest_digest": resolved["metadata"]["sourceHash"],
         "spec_digest": f"sha256:{hashlib.sha256(spec.encode('utf-8')).hexdigest()}",
         "workflow": "speckit",
-        "integration": "hermes",
+        "integration": integration,
     }
     _append_audit(project, record)
     typer.echo(json.dumps(workflow_result, indent=2, sort_keys=True))
@@ -745,6 +789,7 @@ def approve(
                 run_id,
                 next_phase,
                 spec,
+                settings=_phase_settings(project, resolved),
                 command_runner=commands.run_checked,
             )
             external_run_id = str(phase_result["run_id"])
@@ -806,6 +851,8 @@ def checkpoint(
         if staged:
             raise DevPlaneError("project has pre-staged changes; checkpoint refuses ambiguous scope")
         feature_relative = feature_dir.relative_to(project).as_posix()
+        # Projects created before this exclusion existed still need it here.
+        _exclude_speckit_run_state(project)
         changed = commands.run_checked(
             ["git", "status", "--porcelain", "--untracked-files=all"], project
         ).stdout.splitlines()
@@ -1223,6 +1270,7 @@ def resume(
     """Resume a paused Spec Kit workflow, including interactive review gates."""
     project = _project(project)
     try:
+        integration = _read_integration_state(project)["default_integration"]
         result = commands.run_checked(
             ["specify", "workflow", "resume", run_id, "--json"],
             project,
@@ -1239,7 +1287,7 @@ def resume(
             "operation": "resume",
             "run_id": run_id,
             "workflow": "speckit",
-            "integration": "hermes",
+            "integration": integration,
         },
     )
     typer.echo(json.dumps(workflow_result, indent=2, sort_keys=True))

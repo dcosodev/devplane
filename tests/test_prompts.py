@@ -137,7 +137,7 @@ def test_assignment_prompt_keeps_every_contract_rule(
     )
     _assert_contains_all(rules[1], "allowed paths", "DevPlane will reject the commit")
     _assert_contains_all(rules[2], "TDD", "validation")
-    _assert_contains_all(rules[3], "Do not modify", ".devplane/", ".git/", ".hermes/", ".specify/", "specs/")
+    _assert_contains_all(rules[3], "Do not modify", ".agents/", ".claude/", ".opencode/", ".devplane/", ".git/", ".hermes/", ".specify/", "specs/")
     _assert_contains_all(rules[4], "Do not push", "deploy", "account", "destructive Git")
     _assert_contains_all(rules[5], "single focused local commit", "worktree clean")
     next_rule = 6

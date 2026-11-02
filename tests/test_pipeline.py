@@ -11,6 +11,7 @@ from devplane.core import DevPlaneError
 from devplane.execution_plan import build_execution_plan
 from devplane.pipeline import (
     _assignment_prompt,
+    _safe_changed_path,
     integrate_pipeline,
     load_pipeline_run,
     run_execution_pipeline,
@@ -414,3 +415,9 @@ def test_integrate_pipeline_validates_before_moving_project_head(tmp_path: Path)
         integrate_pipeline(project, failing_plan, result, command_runner=run_checked)
 
     assert run_checked(["git", "rev-parse", "HEAD"], project).stdout.strip() == base
+
+
+@pytest.mark.parametrize("root", [".agents", ".claude", ".hermes", ".opencode", ".specify"])
+def test_agent_command_directories_are_read_only_for_assignments(root: str) -> None:
+    with pytest.raises(DevPlaneError, match="governed and read-only"):
+        _safe_changed_path(f"{root}/skills/speckit-plan/SKILL.md")

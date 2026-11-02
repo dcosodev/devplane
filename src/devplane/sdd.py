@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -14,10 +15,48 @@ from typing import Protocol
 
 import yaml
 
+from .agent_runtime import AgentRuntimeConfig, speckit_phase_args
 from .core import DevPlaneError
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _PHASES = {"specify", "plan", "tasks"}
+
+
+@dataclass(frozen=True)
+class SpecKitIntegration:
+    commands_dir: str
+    rules_file: str
+
+
+# Agents that have both a Spec Kit integration and a DevPlane adapter. Each one needs its
+# own install location and its own rules file, the one that agent reads at startup.
+SPECKIT_INTEGRATIONS = {
+    "claude": SpecKitIntegration(".claude/skills", "CLAUDE.md"),
+    "codex": SpecKitIntegration(".agents/skills", "AGENTS.md"),
+    "hermes": SpecKitIntegration(".hermes/skills", ".hermes.md"),
+    "opencode": SpecKitIntegration(".opencode/commands", "AGENTS.md"),
+}
+
+
+@dataclass(frozen=True)
+class PhaseSettings:
+    integration: str
+    model: str | None = None
+    extra_args: tuple[str, ...] = ()
+    executable: str | None = None
+
+
+def phase_settings(integration: str, runtime: AgentRuntimeConfig | None) -> PhaseSettings:
+    """Run phases with the project's runtime settings when it uses the same agent."""
+    if runtime is not None and runtime.adapter == integration:
+        return PhaseSettings(
+            integration,
+            runtime.model,
+            tuple(speckit_phase_args(runtime)),
+            runtime.executable,
+        )
+    agent = AgentRuntimeConfig(integration, integration, None, None, {})
+    return PhaseSettings(integration, extra_args=tuple(speckit_phase_args(agent)))
 
 
 @dataclass(frozen=True)
@@ -44,34 +83,39 @@ def _state_dir(project: Path, run_id: str) -> Path:
     return project.expanduser().resolve() / ".git" / "devplane" / "runs" / run_id
 
 
-def write_phase_workflow(project: Path, run_id: str, phase: str) -> Path:
-    """Materialize a one-phase Spec Kit prompt workflow without vendoring upstream."""
+def write_phase_workflow(
+    project: Path, run_id: str, phase: str, *, model: str | None = None
+) -> Path:
+    """Materialize a one-phase Spec Kit workflow without vendoring upstream."""
     if phase not in _PHASES:
         raise DevPlaneError(f"unsupported Spec Kit phase: {phase}")
     path = _state_dir(project, run_id) / f"phase-{phase}.yaml"
+    # A command step, not a prompt: agents invoke commands differently (/speckit-plan,
+    # $speckit-plan, /speckit.plan), and Spec Kit builds the right form for each one.
+    step: dict[str, object] = {
+        "id": phase,
+        "type": "command",
+        "command": f"speckit.{phase}",
+        "input": {"args": "{{ inputs.spec }}"},
+        "integration": "{{ inputs.integration }}",
+        "timeout": 900,
+    }
+    if model is not None:
+        step["model"] = model
     data = {
         "schema_version": "1.0",
         "workflow": {
             "id": f"devplane-{phase}",
             "name": f"DevPlane {phase}",
             "version": "1.0.0",
-            "description": f"Invoke only /speckit-{phase} under DevPlane gates",
+            "description": f"Invoke only speckit.{phase} under DevPlane gates",
         },
         "requires": {"speckit_version": ">=0.8.5"},
         "inputs": {
             "spec": {"type": "string", "required": True},
-            "integration": {"type": "string", "default": "hermes"},
+            "integration": {"type": "string", "required": True},
         },
-        "steps": [
-            {
-                "id": phase,
-                "type": "prompt",
-                "prompt": f"/speckit-{phase} {{{{ inputs.spec }}}}",
-                "integration": "{{ inputs.integration }}",
-                "model": "MiniMax-M3",
-                "timeout": 900,
-            }
-        ],
+        "steps": [step],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
@@ -184,11 +228,16 @@ def execute_phase(
     phase: str,
     spec: str,
     *,
+    settings: PhaseSettings,
     command_runner: CommandRunner,
 ) -> dict[str, object]:
-    workflow = write_phase_workflow(project, run_id, phase)
+    workflow = write_phase_workflow(project, run_id, phase, model=settings.model)
     environment = os.environ.copy()
-    environment["SPECKIT_INTEGRATION_HERMES_EXTRA_ARGS"] = "--provider minimax-oauth"
+    prefix = f"SPECKIT_INTEGRATION_{settings.integration.upper()}"
+    if settings.extra_args:
+        environment[f"{prefix}_EXTRA_ARGS"] = shlex.join(settings.extra_args)
+    if settings.executable is not None:
+        environment[f"{prefix}_EXECUTABLE"] = settings.executable
     result = command_runner(
         [
             "specify",
@@ -198,7 +247,7 @@ def execute_phase(
             "--input",
             f"spec={spec}",
             "--input",
-            "integration=hermes",
+            f"integration={settings.integration}",
             "--json",
         ],
         project.expanduser().resolve(),

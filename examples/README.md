@@ -30,7 +30,7 @@ uv run devplane runtime claude --model sonnet --project ../demo-project
 # or
 uv run devplane runtime opencode --model openai/gpt-5.3-codex --project ../demo-project
 # or
-uv run devplane runtime hermes --provider minimax-oauth --model MiniMax-M3 --project ../demo-project
+uv run devplane runtime hermes --provider your-provider --model your-model --project ../demo-project
 ```
 
 Replace these capabilities with reviewed organizational conventions. The example's write patterns, shell patterns, and Git worktrees do not provide operating-system isolation.

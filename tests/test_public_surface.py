@@ -58,7 +58,7 @@ def test_public_metadata_and_readme_present_agent_neutral_v02x() -> None:
 
     assert metadata["project"]["version"] == "0.2.2"
     assert "organizational capability catalog" in metadata["project"]["description"].lower()
-    for adapter in ("Hermes", "Claude Code", "OpenCode"):
+    for adapter in ("Hermes", "Claude Code", "Codex", "OpenCode"):
         assert adapter in readme
     assert "Catalog" in readme
     assert "Control plane" in readme

@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 
 from .agent_runtime import AgentRuntimeConfig, SessionRequest, SessionResult
-from .core import DevPlaneError
+from .core import GOVERNED_ROOTS, DevPlaneError
 from .execution_plan import ExecutionAssignment, ExecutionPlan
 from .prompts import load_template, render_template
 from .worktrees import WorktreeHandle
@@ -154,7 +154,7 @@ def _session_id(output: str) -> str | None:
 
 def _assignment_prompt(assignment: ExecutionAssignment, plan: ExecutionPlan) -> str:
     tasks = "\n".join(f"- {task}" for task in assignment.tasks)
-    scopes = "\n".join(f"- {path}" for path in assignment.allowed_paths)
+    scopes = "\n".join(f"- {path}" for path in assignment.allowed_paths) or "- none: this assignment only reads"
     validation = "\n".join(f"- {command}" for command in assignment.validation)
     final_rules_template = (
         "assignment_final_rules_validation_only.md"
@@ -188,7 +188,7 @@ def _safe_changed_path(value: str) -> str:
     path = PurePosixPath(value)
     if not value or path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise DevPlaneError("commit contains an unsafe changed path")
-    if path.parts[0] in {".devplane", ".git", ".hermes", ".specify", "specs"}:
+    if path.parts[0] in GOVERNED_ROOTS:
         raise DevPlaneError(f"changed path is governed and read-only: {value}")
     return path.as_posix()
 

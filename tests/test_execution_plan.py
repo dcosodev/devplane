@@ -260,3 +260,69 @@ def test_execution_plan_revalidates_parallel_scope_overlap_when_loaded(tmp_path:
 
     with pytest.raises(DevPlaneError, match="overlapping"):
         load_execution_plan(output)
+
+
+def _plan_from(tasks: str, source_tasks: str = "specs/001-demo/tasks.md"):
+    return build_execution_plan(
+        parse_tasks_markdown(tasks),
+        run_id="run-123",
+        source_tasks=source_tasks,
+        manifest_digest="sha256:manifest",
+        base_commit="abcdef0",
+        validation_commands=["pytest"],
+    )
+
+
+def test_reference_to_an_approved_document_grants_no_write_scope() -> None:
+    plan = _plan_from(
+        "## Phase 3: User Story 1\n"
+        "- [ ] T001 [US1] Implement src/app.py as described in specs/001-demo/plan.md\n"
+    )
+
+    assert plan.assignments[0].allowed_paths == ("src/app.py",)
+    assert plan.assignments[0].allow_empty_commit is False
+
+
+def test_phase_that_only_reads_approved_documents_has_no_write_scope() -> None:
+    plan = _plan_from(
+        "## Phase 4: Polish\n"
+        "- [ ] T001 Walk through specs/001-demo/quickstart.md and confirm each result\n"
+    )
+
+    assert plan.assignments[0].allowed_paths == ()
+    assert plan.assignments[0].allow_empty_commit is True
+
+
+def test_read_only_plan_survives_a_round_trip(tmp_path: Path) -> None:
+    plan = _plan_from(
+        "## Phase 4: Polish\n"
+        "- [ ] T001 Walk through specs/001-demo/quickstart.md and confirm each result\n"
+    )
+    output = tmp_path / "plan.yaml"
+
+    write_execution_plan(plan, output)
+
+    assert load_execution_plan(output).assignments[0].allowed_paths == ()
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "specs/002-other/plan.md",
+        "specs/001-demo/../002-other/plan.md",
+        ".specify/memory/constitution.md",
+        ".git/hooks/run.sh",
+    ],
+)
+def test_other_governed_paths_are_still_rejected(reference: str) -> None:
+    with pytest.raises(DevPlaneError, match="unsafe write scope"):
+        _plan_from(f"## Phase 3: User Story 1\n- [ ] T001 [US1] Update {reference}\n")
+
+
+def test_tasks_at_the_project_root_do_not_turn_every_path_into_a_read() -> None:
+    plan = _plan_from(
+        "## Phase 3: User Story 1\n- [ ] T001 [US1] Implement src/app.py\n",
+        source_tasks="tasks.md",
+    )
+
+    assert plan.assignments[0].allowed_paths == ("src/app.py",)

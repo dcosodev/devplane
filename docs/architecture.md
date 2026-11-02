@@ -15,11 +15,11 @@ rules + capabilities -> approved task artifacts -> governed assignments -> agent
 Current implementations:
 
 - catalog: local YAML/Markdown with deterministic resolution;
-- workflow producer: GitHub Spec Kit through its Hermes integration, optional;
+- workflow producer: GitHub Spec Kit through the selected agent's integration, optional;
 - control plane: DevPlane plans, worktrees, review, retry, audit, and integration;
-- implementation runtimes: Hermes, Claude Code, and OpenCode adapters.
+- implementation runtimes: Claude Code, Codex, Hermes, and OpenCode adapters.
 
-A model such as MiniMax-M3, Claude, or a provider/model selected in OpenCode sits below its agent runtime. It does not define the catalog or execution contract.
+A model such as Claude, or a provider/model selected in OpenCode, sits below its agent runtime. It does not define the catalog or execution contract.
 
 ## Catalog layer
 
@@ -38,7 +38,7 @@ See [`catalog.md`](catalog.md).
 
 ## Workflow producer
 
-GitHub Spec Kit remains an external tool. When `workflow.engine: speckit` is selected, DevPlane drives the supported `specify`, `plan`, and `tasks` phases through installed Hermes skills and records explicit human approval between phases.
+GitHub Spec Kit remains an external tool. When `workflow.engine: speckit` is selected, DevPlane drives the supported `specify`, `plan`, and `tasks` phases through the commands Spec Kit installed for the selected agent and records explicit human approval between phases.
 
 That integration is not the definition of DevPlane:
 
@@ -47,7 +47,7 @@ That integration is not the definition of DevPlane:
 - approved tasks are agent-neutral input to the control plane;
 - DevPlane never invokes Spec Kit's monolithic implementation phase.
 
-The current Spec Kit phase adapter is Hermes-specific. Adding another workflow producer is separate from adding an implementation runtime adapter.
+Spec Kit's `.specify/integration.json` records which agent runs the phases, so a project can use one agent for phases and another for implementation. When both are the same agent, phases use the runtime's model, provider, permissions, and executable. Adding another workflow producer is separate from adding an implementation runtime adapter.
 
 ## Runtime adapter boundary
 
@@ -181,7 +181,7 @@ The `0.2.x` releases include built-in adapters rather than a plugin API. Arbitra
 - one version per capability ID in a catalog;
 - one selected profile plus direct capabilities;
 - fixed built-in runtime adapter registry;
-- Hermes-only Spec Kit phase integration;
+- Spec Kit phases limited to agents that also have a runtime adapter;
 - post-execution rather than syscall-level scope enforcement;
 - local, non-chained audit JSONL;
 - no signed catalogs or plans.

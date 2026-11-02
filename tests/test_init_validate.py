@@ -1,6 +1,7 @@
 import subprocess
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from devplane.cli import app
@@ -22,10 +23,10 @@ def test_init_creates_project_manifest_and_calls_speckit_runner(tmp_path: Path, 
     result = runner.invoke(app, ["init", str(project), "--catalog", str(catalog)])
     assert result.exit_code == 0, result.output
     assert (project / ".devplane" / "project.yaml").exists()
-    rules = (project / ".hermes.md").read_text(encoding="utf-8")
+    rules = (project / "CLAUDE.md").read_text(encoding="utf-8")
     assert ".devplane/generated/context-<command>.md" in rules
     assert "resolved-manifest.yaml" in rules
-    assert calls == [(["specify", "init", ".", "--integration", "hermes", "--force"], project)]
+    assert calls == [(["specify", "init", ".", "--integration", "claude", "--force"], project)]
 
 
 def test_init_formats_local_filesystem_errors(tmp_path: Path, monkeypatch) -> None:
@@ -56,7 +57,9 @@ def test_init_preserves_existing_hermes_rules_and_adds_contract(tmp_path: Path, 
     project = tmp_path / "repo"
     project.mkdir()
     (project / ".hermes.md").write_text("# Existing rules\n\nKeep me.\n", encoding="utf-8")
-    result = runner.invoke(app, ["init", str(project), "--catalog", str(catalog)])
+    result = runner.invoke(
+        app, ["init", str(project), "--catalog", str(catalog), "--runtime", "hermes"]
+    )
     assert result.exit_code == 0, result.output
     rules = (project / ".hermes.md").read_text(encoding="utf-8")
     assert "Keep me." in rules
@@ -110,6 +113,10 @@ def test_run_dispatches_native_speckit_workflow_to_hermes(tmp_path: Path, monkey
 
     project = make_project(tmp_path)
     (project / ".specify").mkdir()
+    (project / ".specify" / "integration.json").write_text(
+        '{"version":"0.14.5","installed_integrations":["hermes"],"default_integration":"hermes"}',
+        encoding="utf-8",
+    )
     (project / ".hermes" / "skills").mkdir(parents=True)
     runner.invoke(app, ["sync", "--project", str(project)])
     calls = []
@@ -143,7 +150,11 @@ def test_run_dispatches_native_speckit_workflow_to_hermes(tmp_path: Path, monkey
 
 def test_resume_dispatches_speckit_and_records_result(tmp_path: Path, monkeypatch) -> None:
     project = tmp_path / "repo"
-    project.mkdir()
+    (project / ".specify").mkdir(parents=True)
+    (project / ".specify" / "integration.json").write_text(
+        '{"version":"0.14.5","installed_integrations":["opencode"],"default_integration":"opencode"}',
+        encoding="utf-8",
+    )
     calls = []
 
     def fake_run(args, cwd):
@@ -156,6 +167,7 @@ def test_resume_dispatches_speckit_and_records_result(tmp_path: Path, monkeypatc
     assert calls == [(["specify", "workflow", "resume", "abc", "--json"], project)]
     audit = (project / ".devplane" / "audit" / "runs.jsonl").read_text()
     assert '"operation": "resume"' in audit
+    assert '"integration": "opencode"' in audit
 
 
 def test_run_refuses_stale_context(tmp_path: Path, monkeypatch) -> None:
@@ -264,3 +276,94 @@ def test_plan_execution_writes_governed_contract_from_committed_tasks(tmp_path: 
     status = runner.invoke(app, ["run-status", "feature-001", "--project", str(project)])
     assert status.exit_code == 0, status.output
     assert '"status": "planned"' in status.output
+
+
+@pytest.mark.parametrize(
+    ("options", "integration", "rules_file"),
+    [
+        ([], "claude", "CLAUDE.md"),
+        (["--runtime", "codex"], "codex", "AGENTS.md"),
+        (["--runtime", "opencode"], "opencode", "AGENTS.md"),
+        (["--runtime", "hermes"], "hermes", ".hermes.md"),
+        (["--runtime", "none"], "claude", "CLAUDE.md"),
+        (["--runtime", "opencode", "--integration", "claude"], "claude", "CLAUDE.md"),
+    ],
+)
+def test_init_selects_the_speckit_integration_and_its_rules_file(
+    tmp_path: Path, monkeypatch, options: list[str], integration: str, rules_file: str
+) -> None:
+    calls = []
+    monkeypatch.setattr("devplane.commands.run_checked", lambda args, cwd: calls.append(args))
+    monkeypatch.setattr("devplane.cli.shutil.which", lambda _: "/test-bin")
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    (catalog / "manifest.yaml").write_text(
+        "apiVersion: devplane.dev/v1\nkind: CapabilityCatalog\nmetadata: {name: empty}\nspec: {capabilities: []}\n",
+        encoding="utf-8",
+    )
+    project = tmp_path / "repo"
+
+    result = runner.invoke(app, ["init", str(project), "--catalog", str(catalog), *options])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [["specify", "init", ".", "--integration", integration, "--force"]]
+    assert "BEGIN DEVPLANE MANAGED CONTRACT" in (project / rules_file).read_text(encoding="utf-8")
+
+
+def test_init_rejects_an_unknown_speckit_integration(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("devplane.cli.shutil.which", lambda _: "/test-bin")
+    result = runner.invoke(
+        app,
+        ["init", str(tmp_path / "repo"), "--catalog", str(tmp_path), "--integration", "mystery"],
+    )
+
+    assert result.exit_code == 1
+    assert "unsupported Spec Kit integration: mystery" in result.output
+
+
+def test_validate_rejects_a_default_integration_devplane_does_not_support(tmp_path: Path) -> None:
+    from test_sync import make_project
+
+    project = make_project(tmp_path)
+    assert runner.invoke(app, ["sync", "--project", str(project)]).exit_code == 0
+    (project / ".specify").mkdir()
+    (project / ".specify" / "integration.json").write_text(
+        '{"version":"0.14.5","installed_integrations":["gemini"],"default_integration":"gemini"}',
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["validate", "--project", str(project)])
+
+    assert result.exit_code == 1
+    assert "unsupported Spec Kit default integration: 'gemini'" in result.output
+
+
+def test_speckit_run_state_is_excluded_once_and_other_changes_still_show(tmp_path: Path) -> None:
+    from devplane.cli import _exclude_speckit_run_state
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".git" / "info" / "exclude").write_text("# existing\nkeep-me", encoding="utf-8")
+    (tmp_path / ".specify" / "workflows" / "runs" / "abc").mkdir(parents=True)
+    (tmp_path / ".specify" / "workflows" / "runs" / "abc" / "state.json").write_text("{}", encoding="utf-8")
+    (tmp_path / ".specify" / "feature.json").write_text("{}", encoding="utf-8")
+    (tmp_path / ".specify" / "other.json").write_text("{}", encoding="utf-8")
+
+    _exclude_speckit_run_state(tmp_path)
+    _exclude_speckit_run_state(tmp_path)
+
+    exclude = (tmp_path / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+    assert exclude.count("/.specify/feature.json") == 1
+    assert exclude.startswith("# existing\nkeep-me\n")
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=tmp_path, check=True, capture_output=True, text=True,
+    ).stdout
+    assert status.splitlines() == ["?? .specify/other.json"]
+
+
+def test_excluding_speckit_run_state_needs_no_git_repository(tmp_path: Path) -> None:
+    from devplane.cli import _exclude_speckit_run_state
+
+    _exclude_speckit_run_state(tmp_path)
+
+    assert not (tmp_path / ".git").exists()
