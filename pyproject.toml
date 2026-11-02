@@ -1,6 +1,6 @@
 [project]
 name = "devplane"
-version = "0.2.2"
+version = "0.3.0"
 description = "Local-first organizational capability catalog and multi-agent development control plane"
 readme = "README.md"
 requires-python = ">=3.11"
