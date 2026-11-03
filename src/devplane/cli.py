@@ -17,6 +17,14 @@ import yaml
 
 from . import commands
 from .agent_runtime import list_adapters, runtime_from_manifest
+from .backlog import (
+    STATUSES,
+    Story,
+    load_backlog,
+    plan_batches,
+    ready_stories,
+    set_status,
+)
 from .context import build_context_bundle, write_context_bundle
 from .core import DEFAULT_ADAPTER, DevPlaneError, build_resolved_manifest, sync_project
 from .discovery import discover_repository, write_repository_profile
@@ -1330,3 +1338,103 @@ def guard_command(
     if reason is not None:
         typer.echo(f"DevPlane guard: {reason}", err=True)
         raise typer.Exit(2)
+
+
+backlog_app = typer.Typer(
+    help="Repository-scoped story backlog stored in backlog/*.md", no_args_is_help=True
+)
+app.add_typer(backlog_app, name="backlog")
+
+_ProjectOption = Annotated[Path, typer.Option("--project", help="Project root")]
+
+
+def _story_summary(story: Story) -> dict[str, object]:
+    return {
+        "id": story.id,
+        "title": story.title,
+        "status": story.status,
+        "priority": story.priority,
+        "depends_on": list(story.depends_on),
+        "write_scope": list(story.write_scope),
+        "feature": story.feature,
+    }
+
+
+def _emit(payload: object) -> None:
+    typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+
+
+@backlog_app.command("check")
+def backlog_check(project: _ProjectOption = Path(".")) -> None:
+    """Validate every story and the dependency graph."""
+    try:
+        backlog = load_backlog(_project(project))
+    except DevPlaneError as exc:
+        _fail(exc)
+    _emit({"stories": len(backlog.stories)})
+
+
+@backlog_app.command("list")
+def backlog_list(
+    status: Annotated[str | None, typer.Option("--status", help="Only stories in this status")] = None,
+    project: _ProjectOption = Path("."),
+) -> None:
+    """List stories as JSON, optionally filtered by status."""
+    try:
+        if status is not None and status not in STATUSES:
+            raise DevPlaneError(f"unknown status: {status}")
+        backlog = load_backlog(_project(project))
+    except DevPlaneError as exc:
+        _fail(exc)
+    _emit([_story_summary(item) for item in backlog.stories if status in (None, item.status)])
+
+
+@backlog_app.command("show")
+def backlog_show(story_id: str, project: _ProjectOption = Path(".")) -> None:
+    """Show one story, including its Markdown body."""
+    try:
+        story = load_backlog(_project(project)).get(story_id)
+    except DevPlaneError as exc:
+        _fail(exc)
+    _emit({**_story_summary(story), "body": story.body})
+
+
+@backlog_app.command("next")
+def backlog_next(project: _ProjectOption = Path(".")) -> None:
+    """List ready stories whose dependencies are done, highest priority first."""
+    try:
+        stories = ready_stories(load_backlog(_project(project)))
+    except DevPlaneError as exc:
+        _fail(exc)
+    _emit([_story_summary(item) for item in stories])
+
+
+@backlog_app.command("plan")
+def backlog_plan(
+    max_parallel: Annotated[int, typer.Option("--max-parallel", help="Stories per batch")] = 2,
+    project: _ProjectOption = Path("."),
+) -> None:
+    """Group ready stories into batches with pairwise disjoint write scopes."""
+    try:
+        plan = plan_batches(load_backlog(_project(project)), max_parallel=max_parallel)
+    except DevPlaneError as exc:
+        _fail(exc)
+    _emit(
+        {
+            "batches": [[story.id for story in batch] for batch in plan.batches],
+            "deferred": plan.deferred,
+            "waiting": plan.waiting,
+        }
+    )
+
+
+@backlog_app.command("status")
+def backlog_status(
+    story_id: str, new_status: str, project: _ProjectOption = Path(".")
+) -> None:
+    """Move a story to a new status if the transition is allowed."""
+    try:
+        story = set_status(_project(project), story_id, new_status)
+    except DevPlaneError as exc:
+        _fail(exc)
+    _emit({"id": story.id, "status": story.status})

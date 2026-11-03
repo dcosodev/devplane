@@ -250,6 +250,7 @@ See [`docs/quickstart.md`](docs/quickstart.md) for the complete walkthrough.
 | `run-status`, `retry` | Inspect state and recover failed assignments |
 | `integrate` | Validate and fast-forward the approved result |
 | `cleanup` | Preview or apply safe worktree cleanup |
+| `backlog` | Validate, list, plan and advance repository-scoped stories (see `docs/backlog.md`) |
 
 Run `uv run devplane COMMAND --help` for exact options.
 
