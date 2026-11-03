@@ -25,6 +25,13 @@ from .backlog import (
     ready_stories,
     set_status,
 )
+from .backlog_run import (
+    BACKLOG_SOURCE,
+    build_backlog_plan,
+    claim_stories,
+    mark_ready_for_review,
+    verify_backlog_source,
+)
 from .context import build_context_bundle, write_context_bundle
 from .core import DEFAULT_ADAPTER, DevPlaneError, build_resolved_manifest, sync_project
 from .discovery import discover_repository, write_repository_profile
@@ -999,12 +1006,15 @@ def implement(
             plan = load_execution_plan(plan_path)
             if plan.manifest_digest != resolved["metadata"]["sourceHash"]:
                 raise DevPlaneError("execution plan manifest drift detected")
-            source = (project / plan.source_tasks).resolve()
-            if not source.is_relative_to(project) or not source.is_file():
-                raise DevPlaneError("execution plan tasks source is unavailable")
-            phases = parse_tasks_markdown(source.read_text(encoding="utf-8"))
-            if compute_tasks_digest(phases) != plan.tasks_digest:
-                raise DevPlaneError("execution plan tasks drift detected")
+            if plan.source_tasks == BACKLOG_SOURCE:
+                verify_backlog_source(project, plan)
+            else:
+                source = (project / plan.source_tasks).resolve()
+                if not source.is_relative_to(project) or not source.is_file():
+                    raise DevPlaneError("execution plan tasks source is unavailable")
+                phases = parse_tasks_markdown(source.read_text(encoding="utf-8"))
+                if compute_tasks_digest(phases) != plan.tasks_digest:
+                    raise DevPlaneError("execution plan tasks drift detected")
             if dry_run:
                 typer.echo(
                     json.dumps(
@@ -1154,6 +1164,13 @@ def integrate_command(
         _update_feature_status(project, run_id, "integrated")
     except DevPlaneError as exc:
         _fail(exc)
+    backlog_review: list[str] | None = None
+    backlog_error: str | None = None
+    if plan.source_tasks == BACKLOG_SOURCE:
+        try:
+            backlog_review = mark_ready_for_review(project, plan)
+        except DevPlaneError as exc:
+            backlog_error = str(exc)
     _append_audit(
         project,
         {
@@ -1165,7 +1182,17 @@ def integrate_command(
             "final_commit": final_commit,
         },
     )
-    typer.echo(json.dumps({"run_id": run_id, "status": "integrated", "final_commit": final_commit}, indent=2))
+    payload: dict[str, object] = {"run_id": run_id, "status": "integrated", "final_commit": final_commit}
+    if backlog_review is not None:
+        payload["backlog_review"] = backlog_review
+    if backlog_error is not None:
+        payload["backlog_error"] = (
+            f"integrated, but the backlog was not updated: {backlog_error}. "
+            "Move the stories with `devplane backlog status`."
+        )
+    typer.echo(json.dumps(payload, indent=2))
+    if backlog_error is not None:
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -1188,12 +1215,15 @@ def retry(
             raise DevPlaneError("retry requires a failed pipeline result")
         if plan.manifest_digest != resolved["metadata"]["sourceHash"]:
             raise DevPlaneError("cannot retry after manifest drift")
-        source = (project / plan.source_tasks).resolve()
-        if not source.is_relative_to(project) or not source.is_file():
-            raise DevPlaneError("execution plan tasks source is unavailable")
-        phases = parse_tasks_markdown(source.read_text(encoding="utf-8"))
-        if compute_tasks_digest(phases) != plan.tasks_digest:
-            raise DevPlaneError("cannot retry after tasks drift")
+        if plan.source_tasks == BACKLOG_SOURCE:
+            verify_backlog_source(project, plan)
+        else:
+            source = (project / plan.source_tasks).resolve()
+            if not source.is_relative_to(project) or not source.is_file():
+                raise DevPlaneError("execution plan tasks source is unavailable")
+            phases = parse_tasks_markdown(source.read_text(encoding="utf-8"))
+            if compute_tasks_digest(phases) != plan.tasks_digest:
+                raise DevPlaneError("cannot retry after tasks drift")
         runtime_config = runtime_from_manifest(resolved)
         retried = run_execution_pipeline(
             project,
@@ -1438,3 +1468,114 @@ def backlog_status(
     except DevPlaneError as exc:
         _fail(exc)
     _emit({"id": story.id, "status": story.status})
+
+
+@backlog_app.command("run")
+def backlog_run_command(
+    validation: Annotated[
+        list[str] | None,
+        typer.Option("--validation", help="Exact validation command; repeat as needed"),
+    ] = None,
+    max_parallel: Annotated[
+        int, typer.Option("--max-parallel", min=1, max=8, help="Stories claimed together")
+    ] = 2,
+    max_agents: Annotated[int, typer.Option("--max-agents", min=1, max=8)] = 3,
+    run_id: Annotated[
+        str | None, typer.Option("--run-id", help="Stable safe identifier; generated when omitted")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Show the batch and plan without claiming anything")
+    ] = False,
+    project: _ProjectOption = Path("."),
+) -> None:
+    """Claim the next batch of ready stories and implement them with parallel agents.
+
+    Claiming commits ``ready -> in_progress`` for the batch; that commit is the
+    plan's approved base. Review the result and run ``devplane integrate <run>``.
+    """
+    project = _project(project)
+    try:
+        resolved = sync_project(project, check=True)
+        _verify_contexts(project, resolved)
+        effective_run_id = run_id or f"backlog-{uuid.uuid4().hex[:12]}"
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", effective_run_id):
+            raise DevPlaneError("run_id must be a safe identifier")
+        state_dir = project / ".git" / "devplane" / "runs" / effective_run_id
+        if state_dir.exists():
+            raise DevPlaneError(f"run already exists: {effective_run_id}")
+        runtime_config = None if dry_run else runtime_from_manifest(resolved)
+        backlog = load_backlog(project)
+        planned = plan_batches(backlog, max_parallel=max_parallel)
+        if not planned.batches:
+            notes = [f"{key}: {value}" for key, value in sorted(planned.deferred.items())]
+            notes += [f"{key} waits for {', '.join(value)}" for key, value in sorted(planned.waiting.items())]
+            raise DevPlaneError(
+                "no ready stories to run" + (f" ({'; '.join(notes)})" if notes else "")
+            )
+        batch = list(planned.batches[0])
+        validations = validation or resolved["spec"].get("validations", [])
+        head = commands.run_checked(["git", "rev-parse", "HEAD"], project).stdout.strip()
+        # Validate the whole plan before anything is claimed or committed.
+        preview = build_backlog_plan(
+            batch,
+            run_id=effective_run_id,
+            manifest_digest=resolved["metadata"]["sourceHash"],
+            base_commit=head,
+            validation_commands=validations,
+        )
+        if dry_run:
+            _emit(
+                {
+                    "run_id": effective_run_id,
+                    "dry_run": True,
+                    "stories": [story.id for story in batch],
+                    "deferred": planned.deferred,
+                    "assignments": [asdict(item) for item in preview.assignments],
+                }
+            )
+            return
+        assert runtime_config is not None
+        base_commit = claim_stories(project, batch)
+        plan = build_backlog_plan(
+            batch,
+            run_id=effective_run_id,
+            manifest_digest=resolved["metadata"]["sourceHash"],
+            base_commit=base_commit,
+            validation_commands=validations,
+        )
+        plan_path = state_dir / "execution-plan.yaml"
+        write_execution_plan(plan, plan_path)
+        _append_audit(
+            project,
+            {
+                "event": "backlog.run.started",
+                "run_id": effective_run_id,
+                "recorded_at": datetime.now(UTC).isoformat(),
+                "manifest_digest": resolved["metadata"]["sourceHash"],
+                "base_commit": base_commit,
+                "stories": [story.id for story in batch],
+            },
+        )
+        result = run_execution_pipeline(
+            project, plan, max_agents=max_agents, runtime_config=runtime_config
+        )
+        write_pipeline_run(result, state_dir / "result.json")
+        for assignment in result.assignments:
+            _append_audit(
+                project,
+                {
+                    "event": "pipeline.assignment",
+                    "run_id": result.run_id,
+                    "recorded_at": datetime.now(UTC).isoformat(),
+                    "manifest_digest": resolved["metadata"]["sourceHash"],
+                    "adapter": runtime_config.adapter,
+                    "provider": runtime_config.provider,
+                    "model": runtime_config.model,
+                    **asdict(assignment),
+                },
+            )
+    except (DevPlaneError, OSError) as exc:
+        _fail(exc if isinstance(exc, DevPlaneError) else DevPlaneError(f"cannot run backlog: {exc}"))
+    _emit({**asdict(result), "stories": [story.id for story in batch]})
+    if result.status != "completed":
+        raise typer.Exit(1)

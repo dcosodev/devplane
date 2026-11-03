@@ -60,6 +60,7 @@ All commands accept `--project <root>` and print JSON.
 | `devplane backlog next` | Ready stories whose dependencies are done, highest priority first |
 | `devplane backlog plan [--max-parallel N]` | Group ready stories into parallel batches |
 | `devplane backlog status <id> <new>` | Apply an allowed status change |
+| `devplane backlog run [--max-parallel N] [--max-agents N] [--validation CMD] [--dry-run]` | Claim the next batch and implement it with parallel agents |
 
 `status` rewrites only the frontmatter `status:` line and refuses any change that would leave the story invalid, for example moving a story without a `write_scope` to `ready`.
 
@@ -73,4 +74,26 @@ All commands accept `--project <root>` and print JSON.
 - `--max-parallel` caps a batch; the rest wait in later batches.
 - Stories waiting on unfinished dependencies are listed under `waiting`.
 
-The plan is advisory: it does not start agents, create worktrees or claim stories. Declared scopes are what the planner trusts, so an agent that writes outside its scope is still caught by the guard and by the post-run allowed-path check, not by the planner.
+`plan` is advisory: it does not start agents, create worktrees or claim stories. `run` does that for the first batch. Declared scopes are what the planner trusts, so an agent that writes outside its scope is still caught by the guard and by the post-run allowed-path check, not by the planner.
+
+## Running stories
+
+`devplane backlog run` takes the first batch of `plan` and implements it through the same governed pipeline as `implement --parallel`: one isolated worktree and branch per story, the story's `write_scope` as the assignment's allowed paths, the validation commands, the post-run allowed-path check, and the audit trail.
+
+```bash
+devplane backlog run --validation "uv run pytest" --max-parallel 3 --dry-run   # inspect the batch
+devplane backlog run --validation "uv run pytest" --max-parallel 3             # claim and implement
+devplane run-status <run-id>
+devplane integrate <run-id>                                                    # fast-forward the reviewed result
+```
+
+What happens:
+
+1. The whole execution plan is validated before anything changes. `--dry-run` stops here and prints the batch.
+2. The project must be clean. DevPlane commits `chore(backlog): start <ids>` moving the batch from `ready` to `in_progress`. That commit is the plan's approved base, so every agent worktree sees the claim. If the commit fails, the story files are restored.
+3. Agents run in parallel, one per story; the assignment id is the story id.
+4. `devplane integrate` fast-forwards the validated result, then commits `chore(backlog): ready for review <ids>` for the stories that are still `in_progress`. Move them to `done` yourself with `devplane backlog status` once reviewed.
+
+If a run fails, the stories stay `in_progress` and `devplane retry <run-id>` reuses the commits that were valid. `implement --execution-plan` and `retry` refuse to continue if a story was edited after the plan was made; status changes alone do not count as drift.
+
+Limits: one batch per invocation; validation commands come from `--validation` or the catalog; the backlog is not updated until `integrate`, so a failed run is never marked as finished; there is no event history yet.

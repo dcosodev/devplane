@@ -1,0 +1,336 @@
+"""Tests for turning backlog stories into governed execution runs."""
+
+from __future__ import annotations
+
+import stat
+from pathlib import Path
+
+import pytest
+
+from devplane.agent_runtime import SessionResult
+from devplane.backlog import load_backlog, plan_batches
+from devplane.backlog_run import (
+    BACKLOG_SOURCE,
+    build_backlog_plan,
+    claim_stories,
+    mark_ready_for_review,
+    stories_digest,
+    verify_backlog_source,
+)
+from devplane.commands import run_checked
+from devplane.core import DevPlaneError
+from devplane.execution_plan import load_execution_plan, write_execution_plan
+from devplane.pipeline import integrate_pipeline, run_execution_pipeline
+
+
+def _story(
+    project: Path,
+    story_id: str,
+    *,
+    status: str = "ready",
+    scope: str = "src/a.py",
+    title: str | None = None,
+    body: str = "Do the thing.\n",
+    depends_on: str = "[]",
+) -> Path:
+    directory = project / "backlog"
+    directory.mkdir(exist_ok=True)
+    path = directory / f"{story_id}.md"
+    path.write_text(
+        f"---\nid: {story_id}\ntitle: {title or 'Story ' + story_id}\nstatus: {status}\n"
+        f"depends_on: {depends_on}\nwrite_scope: ['{scope}']\n---\n{body}",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _git_project(tmp_path: Path) -> Path:
+    project = tmp_path / "repo"
+    project.mkdir()
+    run_checked(["git", "init", "-b", "main"], project)
+    run_checked(["git", "config", "user.name", "DevPlane Test"], project)
+    run_checked(["git", "config", "user.email", "devplane@test.invalid"], project)
+    (project / "README.md").write_text("demo\n", encoding="utf-8")
+    run_checked(["git", "add", "-A"], project)
+    run_checked(["git", "commit", "-m", "test: baseline"], project)
+    return project
+
+
+def _commit_all(project: Path, message: str = "test: stories") -> str:
+    run_checked(["git", "add", "-A"], project)
+    run_checked(["git", "commit", "-m", message], project)
+    return run_checked(["git", "rev-parse", "HEAD"], project).stdout.strip()
+
+
+def _stories(project: Path, *ids: str):
+    backlog = load_backlog(project)
+    return [backlog.get(story_id) for story_id in ids]
+
+
+def _plan(project: Path, *ids: str, base: str | None = None):
+    base = base or run_checked(["git", "rev-parse", "HEAD"], project).stdout.strip()
+    return build_backlog_plan(
+        _stories(project, *ids),
+        run_id="backlog-run",
+        manifest_digest="sha256:manifest",
+        base_commit=base,
+        validation_commands=["python3 -c pass"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# plan construction
+# ---------------------------------------------------------------------------
+
+
+def test_stories_become_one_assignment_each(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001", scope="src/auth/**", title="Auth", body="Accept: login works.\n")
+    _story(project, "US-002", scope="docs/**", title="Docs")
+
+    plan = _plan(project, "US-001", "US-002")
+
+    assert plan.source_tasks == BACKLOG_SOURCE == "backlog"
+    assert plan.run_id == "backlog-run"
+    first, second = plan.assignments
+    assert [first.assignment_id, second.assignment_id] == ["US-001", "US-002"]
+    assert first.phase == "US-001: Auth"
+    assert first.mode == second.mode == "parallel"
+    assert first.depends_on == second.depends_on == ()
+    assert first.allowed_paths == ("src/auth/**",)
+    assert first.validation == ("python3 -c pass",)
+    assert first.allow_empty_commit is False
+    (task,) = first.tasks
+    assert task.startswith("US-001: Auth")
+    assert "  Accept: login works." in task
+
+
+def test_a_single_story_runs_serially(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001")
+
+    assert _plan(project, "US-001").assignments[0].mode == "serial"
+
+
+def test_the_plan_survives_the_execution_plan_loader(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001", scope="src/auth/**")
+    _story(project, "US-002", scope="docs/**")
+    plan = _plan(project, "US-001", "US-002")
+    target = tmp_path / "execution-plan.yaml"
+
+    write_execution_plan(plan, target)
+
+    assert load_execution_plan(target) == plan
+
+
+def test_overlapping_stories_cannot_share_a_plan(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001", scope="src/auth/**")
+    _story(project, "US-002", scope="src/auth/models.py")
+
+    with pytest.raises(DevPlaneError, match="overlapping"):
+        _plan(project, "US-001", "US-002")
+
+
+def test_plans_need_stories_and_validation_commands(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001")
+    base = run_checked(["git", "rev-parse", "HEAD"], project).stdout.strip()
+
+    with pytest.raises(DevPlaneError, match="at least one story"):
+        build_backlog_plan(
+            [], run_id="r", manifest_digest="sha256:m", base_commit=base, validation_commands=["x"]
+        )
+    with pytest.raises(DevPlaneError, match="validation"):
+        build_backlog_plan(
+            _stories(project, "US-001"),
+            run_id="r",
+            manifest_digest="sha256:m",
+            base_commit=base,
+            validation_commands=[],
+        )
+
+
+def test_story_scopes_the_plan_loader_would_reject_fail_early(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001", scope="src/a:b.py")
+
+    with pytest.raises(DevPlaneError, match="write scope"):
+        _plan(project, "US-001")
+
+
+# ---------------------------------------------------------------------------
+# digest and drift
+# ---------------------------------------------------------------------------
+
+
+def test_digest_tracks_content_but_not_status(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    path = _story(project, "US-001", body="First.\n")
+    before = stories_digest(_stories(project, "US-001"))
+
+    path.write_text(path.read_text().replace("status: ready", "status: in_progress"))
+    assert stories_digest(_stories(project, "US-001")) == before
+
+    path.write_text(path.read_text().replace("First.", "Second."))
+    assert stories_digest(_stories(project, "US-001")) != before
+
+
+def test_verify_accepts_an_unchanged_backlog_and_status_changes(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    path = _story(project, "US-001")
+    plan = _plan(project, "US-001")
+
+    verify_backlog_source(project, plan)
+    path.write_text(path.read_text().replace("status: ready", "status: in_progress"))
+    verify_backlog_source(project, plan)
+
+
+def test_verify_detects_edited_and_removed_stories(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    path = _story(project, "US-001", body="First.\n")
+    plan = _plan(project, "US-001")
+
+    path.write_text(path.read_text().replace("First.", "Edited."))
+    with pytest.raises(DevPlaneError, match="drift"):
+        verify_backlog_source(project, plan)
+
+    path.unlink()
+    with pytest.raises(DevPlaneError, match="drift|unknown story"):
+        verify_backlog_source(project, plan)
+
+
+# ---------------------------------------------------------------------------
+# claiming and finishing
+# ---------------------------------------------------------------------------
+
+
+def test_claim_commits_in_progress_statuses(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001")
+    _story(project, "US-002", scope="docs/**")
+    before = _commit_all(project)
+
+    head = claim_stories(project, _stories(project, "US-001", "US-002"))
+
+    assert head != before
+    assert run_checked(["git", "rev-parse", "HEAD"], project).stdout.strip() == head
+    assert run_checked(["git", "status", "--porcelain"], project).stdout == ""
+    assert {story.status for story in _stories(project, "US-001", "US-002")} == {"in_progress"}
+    subject = run_checked(["git", "log", "-1", "--format=%s"], project).stdout.strip()
+    assert subject == "chore(backlog): start US-001, US-002"
+    body = run_checked(["git", "log", "-1", "--format=%B"], project).stdout.lower()
+    assert "co-authored" not in body
+
+
+def test_claim_requires_a_clean_project(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001")
+    _commit_all(project)
+    (project / "README.md").write_text("dirty\n", encoding="utf-8")
+
+    with pytest.raises(DevPlaneError, match="clean"):
+        claim_stories(project, _stories(project, "US-001"))
+
+    assert _stories(project, "US-001")[0].status == "ready"
+
+
+def test_claim_restores_the_stories_when_the_commit_fails(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    path = _story(project, "US-001")
+    _commit_all(project)
+    hook = project / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(hook.stat().st_mode | stat.S_IXUSR)
+    original = path.read_text()
+
+    with pytest.raises(DevPlaneError):
+        claim_stories(project, _stories(project, "US-001"))
+
+    assert path.read_text() == original
+    assert run_checked(["git", "status", "--porcelain"], project).stdout == ""
+
+
+def test_claim_only_moves_ready_stories(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001", status="backlog")
+    _commit_all(project)
+
+    with pytest.raises(DevPlaneError, match="transition"):
+        claim_stories(project, _stories(project, "US-001"))
+
+
+def test_mark_ready_for_review_moves_only_stories_still_in_progress(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001", scope="src/a.py")
+    _story(project, "US-002", scope="docs/**")
+    _commit_all(project)
+    claim_stories(project, _stories(project, "US-001", "US-002"))
+    plan = _plan(project, "US-001", "US-002")
+    blocked = project / "backlog" / "US-002.md"
+    blocked.write_text(blocked.read_text().replace("status: in_progress", "status: blocked"))
+    _commit_all(project, "chore: someone blocked US-002")
+
+    moved = mark_ready_for_review(project, plan)
+
+    assert moved == ["US-001"]
+    statuses = {story.id: story.status for story in load_backlog(project).stories}
+    assert statuses == {"US-001": "review", "US-002": "blocked"}
+    assert run_checked(["git", "status", "--porcelain"], project).stdout == ""
+    subject = run_checked(["git", "log", "-1", "--format=%s"], project).stdout.strip()
+    assert subject == "chore(backlog): ready for review US-001"
+
+
+# ---------------------------------------------------------------------------
+# end to end through the existing pipeline
+# ---------------------------------------------------------------------------
+
+
+def test_backlog_batch_runs_through_the_pipeline_and_integrates(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001", scope="src/auth/**")
+    _story(project, "US-002", scope="docs/**")
+    _story(project, "US-003", scope="src/auth/models.py")
+    _commit_all(project)
+
+    batch = plan_batches(load_backlog(project), max_parallel=4).batches[0]
+    ids = [story.id for story in batch]
+    assert ids == ["US-001", "US-002"]
+    base = claim_stories(project, list(batch))
+    plan = build_backlog_plan(
+        _stories(project, *ids),
+        run_id="backlog-e2e",
+        manifest_digest="sha256:manifest",
+        base_commit=base,
+        validation_commands=["python3 -c pass"],
+    )
+    verify_backlog_source(project, plan)
+
+    def sessions_fn(requests, max_workers, runner=None):
+        results = []
+        for request in requests:
+            scope = next(
+                item.allowed_paths[0] for item in plan.assignments if item.assignment_id == request.task_id
+            )
+            target = request.cwd / scope.removesuffix("/**") / f"{request.task_id}.txt"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("done\n", encoding="utf-8")
+            run_checked(["git", "add", "-A"], request.cwd)
+            run_checked(["git", "commit", "-m", f"test: {request.task_id}"], request.cwd)
+            results.append(SessionResult(request.task_id, 0, "completed", None))
+        return results
+
+    result = run_execution_pipeline(
+        project, plan, max_agents=2, sessions_fn=sessions_fn, command_runner=run_checked
+    )
+    assert result.status == "completed"
+
+    integrate_pipeline(project, plan, result)
+    assert mark_ready_for_review(project, plan) == ["US-001", "US-002"]
+
+    tracked = run_checked(["git", "ls-tree", "-r", "--name-only", "HEAD"], project).stdout.split()
+    assert {"src/auth/US-001.txt", "docs/US-002.txt"}.issubset(tracked)
+    statuses = {story.id: story.status for story in load_backlog(project).stories}
+    assert statuses == {"US-001": "review", "US-002": "review", "US-003": "ready"}
+    assert run_checked(["git", "status", "--porcelain"], project).stdout == ""
