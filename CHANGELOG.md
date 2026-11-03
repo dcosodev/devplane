@@ -6,26 +6,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-03
+
 ### Added
 
-- Hermes write guard: `devplane guard --hermes` speaks Hermes' `pre_tool_call` shell-hook protocol for `write_file` and `patch` (including multi-file patches). The `writeGuard` runtime option now also works for Hermes: DevPlane exports the per-assignment policy as `DEVPLANE_GUARD_POLICY` and, before launching any agent, checks with `hermes hooks list` that the hook is installed, approved and covers both tools. Hermes keeps its hooks in its own global configuration, so you install the hook once and DevPlane never edits it.
-- `devplane adapters` reports `write_guard` (`pre-execution` or `post-run-only`) for every adapter.
-- `devplane backlog run --batches N --integrate`: runs up to N waves in sequence, integrating each completed wave before planning the next, and stops at the first failed wave or integration, when no story is ready, or at the limit. Chaining requires `--integrate` because each wave builds on the integrated result of the previous one. `devplane integrate` and `backlog run` now share the same integration code.
-- Audit events for the backlog: `backlog.status.changed` when `devplane backlog status` moves a story and `backlog.review.recorded` when `integrate` moves integrated stories to `review`, alongside the existing `backlog.run.started`.
 - Bounded write-scope grammar (`devplane.scopes`): literal segments, `*` and `?` within a segment, and `**` only as the final segment, with exact membership and overlap decisions.
 - `devplane guard --policy <file>`: a Claude Code `PreToolUse` hook that blocks `Edit`, `Write`, `MultiEdit` and `NotebookEdit` calls outside an assignment's write scopes, outside its worktree (including through symlinks), or into governed roots. Every failure path exits with 2, the only code Claude Code treats as a block.
-- `python -m devplane` entry point.
 - Claude Code runtime option `writeGuard: true`: registers `devplane guard` as a per-assignment `PreToolUse` hook through `--settings`. The execution pipeline writes a per-assignment policy outside the worktree and fails the assignment, rather than running unguarded, if it cannot. Off by default; other adapters reject the option.
+- Hermes write guard: `devplane guard --hermes` speaks Hermes' `pre_tool_call` shell-hook protocol for `write_file` and `patch` (including multi-file patches). The `writeGuard` runtime option now also works for Hermes: DevPlane exports the per-assignment policy as `DEVPLANE_GUARD_POLICY` and, before launching any agent, checks with `hermes hooks list` that the hook is installed, approved and covers both tools. Hermes keeps its hooks in its own global configuration, so you install the hook once and DevPlane never edits it.
+- `devplane adapters` reports `write_guard` (`pre-execution` or `post-run-only`) for every adapter.
+- `python -m devplane` entry point.
 - `devplane backlog` (`check`, `list`, `show`, `next`, `plan`, `status`): a repository-scoped story backlog stored as Markdown files in `backlog/`, with dependency and cycle validation, a fixed status transition table and a planner that groups ready stories into parallel batches with pairwise disjoint write scopes. See `docs/backlog.md`.
 - Stories can declare their own `validation` commands. They replace the run's default validation for that story only, are checked with the same no-shell rules the pipeline uses, and count as story content for drift detection. A run is refused before any claim if some story has no validation at all.
 - `devplane backlog run`: claims the next batch of ready stories in a `chore(backlog): start …` commit that becomes the approved base, then implements it with parallel agents through the existing worktree pipeline (story id = assignment id, `write_scope` = allowed paths). `implement --execution-plan`, `retry` and `integrate` understand backlog plans; `integrate` records integrated stories as `review`. `validate_execution_plan` is now a reusable function.
+- `devplane backlog run --batches N --integrate`: runs up to N waves in sequence, integrating each completed wave before planning the next, and stops at the first failed wave or integration, when no story is ready, or at the limit. Chaining requires `--integrate` because each wave builds on the integrated result of the previous one. `devplane integrate` and `backlog run` now share the same integration code.
+- Audit events for the backlog: `backlog.status.changed` when `devplane backlog status` moves a story and `backlog.review.recorded` when `integrate` moves integrated stories to `review`, alongside the existing `backlog.run.started`.
 
 ### Changed
 
-- Errors that reject a dirty project or worktree (`claim`, `plan-execution`, `implement`, `integrate`, `cleanup`, worktree creation) now name the first files that block it, for example `project must be clean before integration: ?? calc/__pycache__/`.
-- Assignment prompts now ask agents not to add `Co-Authored-By` or other tool attribution lines to their commit messages. The Claude Code adapter also turns off Claude Code's own commit and pull-request attribution for DevPlane sessions (`--settings`), because those commits are fast-forwarded into the project. Set the Claude runtime option `commitAttribution: true` to keep it.
+- **Behavior change:** Assignment prompts now ask agents not to add `Co-Authored-By` or other tool attribution lines to their commit messages. The Claude Code adapter also turns off Claude Code's own commit and pull-request attribution for DevPlane sessions (`--settings`), because those commits are fast-forwarded into the project. Set the Claude runtime option `commitAttribution: true` to keep it.
 - Parallel-batch overlap detection now uses exact scope overlap instead of a prefix approximation. Disjoint patterns such as `src/*.py` and `src/*.txt` are no longer reported as overlapping.
 - Execution plans express a trailing `dir/*` write scope as `dir/**`, preserving its reach over nested files.
+- Errors that reject a dirty project or worktree (`claim`, `plan-execution`, `implement`, `integrate`, `cleanup`, worktree creation) now name the first files that block it, for example `project must be clean before integration: ?? calc/__pycache__/`.
 
 ### Fixed
 
@@ -34,7 +36,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Security
 
-- Post-run allowed-path checks no longer let `*` cross directory boundaries. A scope such as `src/*.py` previously accepted `src/nested/a.py` through `fnmatch`; it now rejects it. Saved plans that relied on that behavior fail closed.
+- **Behavior change:** Post-run allowed-path checks no longer let `*` cross directory boundaries. A scope such as `src/*.py` previously accepted `src/nested/a.py` through `fnmatch`; it now rejects it. Saved plans that relied on that behavior fail closed.
 
 ## [0.3.0] - 2026-11-02
 
@@ -126,7 +128,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Rejects path and symlink escapes, malformed Git identifiers, execution-plan drift, out-of-scope writes, governance changes, dirty worktrees, and changed integration bases.
 - Uses safe YAML loading, argument-array subprocesses with `shell=False`, non-interactive child processes, and digest-only handling for private feature descriptions.
 
-[Unreleased]: https://github.com/dcosodev/devplane/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/dcosodev/devplane/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/dcosodev/devplane/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/dcosodev/devplane/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/dcosodev/devplane/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/dcosodev/devplane/compare/v0.2.0...v0.2.1
