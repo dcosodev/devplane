@@ -41,6 +41,27 @@ Unknown keys, symlinked files or directories, files over 256 KiB, duplicate ids 
 
 Literal path segments, `*` and `?` inside a segment (never crossing `/`), and `**` only as the final segment, matching one or more further segments. Character classes, braces, negation and `**` elsewhere are rejected.
 
+## Creating stories and the board
+
+`devplane backlog create` writes a story with the same validation as a hand-written one, plus the rest of the backlog: the id must be unique, dependencies must exist, a `ready` story needs a `write_scope`, and an existing file is never overwritten. Ids continue after the highest `US-NNN` (`--prefix` changes the prefix, `--id` sets one). New stories start as `backlog` or `ready`. The file is left uncommitted for you to review, like `backlog status`.
+
+```bash
+devplane backlog create --title "Sum function" --priority high \
+  --write-scope calc/add.py --write-scope tests/test_add.py \
+  --validation "python3 -m unittest discover -s tests" --body-file story.md
+```
+
+`devplane backlog board` groups the stories by status, highest priority first, and annotates the `ready` ones with what `plan` would do: `runs next`, `wave N: overlaps …` (queued behind a story it overlaps), `deferred: overlaps … (in progress)`, or `waits for …`. The last line names the next batch. `--format markdown` prints a table per column for pull requests, and `--format json` the same data for tools.
+
+```text
+READY (3)
+  US-001  high    Auth    — runs next
+  US-002  normal  Docs    — runs next
+  US-003  normal  Models  — wave 2: overlaps US-001 on src/auth/models.py vs src/auth/**
+
+next batch: US-001, US-002
+```
+
 ## Statuses
 
 ```text
@@ -60,6 +81,8 @@ All commands accept `--project <root>` and print JSON.
 | `devplane backlog check` | Validate every story and the dependency graph |
 | `devplane backlog list [--status S]` | List stories |
 | `devplane backlog show <id>` | Show one story with its body |
+| `devplane backlog create --title T [options]` | Create a validated story file (not committed); the id is generated unless `--id` is given |
+| `devplane backlog board [--format text\|markdown\|json]` | Show the backlog as columns, with what the planner would do with each ready story |
 | `devplane backlog next` | Ready stories whose dependencies are done, highest priority first |
 | `devplane backlog plan [--max-parallel N]` | Group ready stories into parallel batches |
 | `devplane backlog status <id> <new>` | Apply an allowed status change |
@@ -121,6 +144,7 @@ The story files and the `chore(backlog): …` commits are the history of what ea
 | --- | --- | --- |
 | `backlog.run.started` | `backlog run` claimed a batch | `run_id`, `base_commit`, `stories`, `manifest_digest` |
 | `pipeline.assignment` | each assignment of a run finished | the existing pipeline fields |
+| `backlog.story.created` | `backlog create` wrote a story | `story`, `path`, `status` |
 | `backlog.status.changed` | `backlog status` moved a story | `story`, `from`, `to` |
 | `backlog.review.recorded` | `integrate` moved integrated stories to `review` | `run_id`, `stories`, `final_commit` |
 
