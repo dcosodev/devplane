@@ -94,6 +94,12 @@ def _run(project: Path, *args: str):
     )
 
 
+def _run_with(project: Path, command: str, *args: str):
+    return runner.invoke(
+        app, ["backlog", "run", "--validation", command, "--project", str(project), *args]
+    )
+
+
 def _statuses(project: Path) -> dict[str, str]:
     return {story.id: story.status for story in load_backlog(project).stories}
 
@@ -186,6 +192,33 @@ def test_run_needs_a_validation_command(project: Path) -> None:
     assert "validation" in result.output
     assert _statuses(project) == {"US-001": "ready", "US-002": "ready", "US-003": "ready"}
     assert _git(project, "log", "-1", "--format=%s") == "docs: add stories"
+
+
+def test_story_validation_overrides_a_failing_default_and_needs_no_flag(project: Path) -> None:
+    for story_id in ("US-001", "US-002", "US-003"):
+        path = project / "backlog" / f"{story_id}.md"
+        path.write_text(path.read_text().replace("---\nImplement", "validation: ['python3 -c pass']\n---\nImplement"))
+    _git(project, "add", "-A")
+    _git(project, "commit", "-m", "docs: story validation")
+
+    own = runner.invoke(app, ["backlog", "run", "--project", str(project)])
+    assert own.exit_code == 0, own.output
+    assert json.loads(own.output)["status"] == "completed"
+
+    listed = json.loads(runner.invoke(app, ["backlog", "list", "--project", str(project)]).output)
+    assert listed[0]["validation"] == ["python3 -c pass"]
+
+
+def test_story_validation_wins_over_a_default_that_would_fail(project: Path) -> None:
+    for story_id in ("US-001", "US-002", "US-003"):
+        path = project / "backlog" / f"{story_id}.md"
+        path.write_text(path.read_text().replace("---\nImplement", "validation: ['python3 -c pass']\n---\nImplement"))
+    _git(project, "add", "-A")
+    _git(project, "commit", "-m", "docs: story validation")
+
+    result = _run_with(project, "python3 -c 'import sys; sys.exit(1)'")
+
+    assert result.exit_code == 0, result.output
 
 
 def test_failed_run_keeps_stories_in_progress_and_can_be_retried(

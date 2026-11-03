@@ -45,6 +45,7 @@ def stories_digest(stories: Sequence[Story]) -> str:
             "priority": story.priority,
             "depends_on": list(story.depends_on),
             "write_scope": list(story.write_scope),
+            "validation": list(story.validation),
             "feature": story.feature,
             "body": story.body,
         }
@@ -74,9 +75,15 @@ def build_backlog_plan(
         raise DevPlaneError("a backlog run needs at least one story")
     if not isinstance(manifest_digest, str) or not manifest_digest.startswith("sha256:"):
         raise DevPlaneError("manifest_digest must be a sha256 digest")
-    commands = tuple(command.strip() for command in validation_commands)
-    if not commands or any(not command or "\x00" in command for command in commands):
-        raise DevPlaneError("at least one non-empty validation command is required")
+    defaults = tuple(command.strip() for command in validation_commands)
+    if any(not command or "\x00" in command for command in defaults):
+        raise DevPlaneError("validation commands must be non-empty")
+    for story in stories:
+        if not story.validation and not defaults:
+            raise DevPlaneError(
+                f"story {story.id} has no validation command; "
+                "pass --validation or add validation to the story"
+            )
     mode = "parallel" if len(stories) > 1 else "serial"
     assignments = tuple(
         ExecutionAssignment(
@@ -86,7 +93,7 @@ def build_backlog_plan(
             tasks=(_task_text(story),),
             depends_on=(),
             allowed_paths=story.write_scope,
-            validation=commands,
+            validation=story.validation or defaults,
             allow_empty_commit=False,
         )
         for story in stories

@@ -1388,6 +1388,7 @@ def _story_summary(story: Story) -> dict[str, object]:
         "priority": story.priority,
         "depends_on": list(story.depends_on),
         "write_scope": list(story.write_scope),
+        "validation": list(story.validation),
         "feature": story.feature,
     }
 

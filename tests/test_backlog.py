@@ -198,6 +198,42 @@ def test_symlinked_backlog_directory_is_rejected(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# per-story validation
+# ---------------------------------------------------------------------------
+
+
+def test_validation_commands_are_parsed_and_default_to_none(tmp_path: Path) -> None:
+    _story(tmp_path, "US-001", extra="validation: ['python3 -m unittest', 'test -f docs/HELP.md']")
+    _story(tmp_path, "US-002")
+
+    backlog = load_backlog(tmp_path)
+
+    assert backlog.get("US-001").validation == ("python3 -m unittest", "test -f docs/HELP.md")
+    assert backlog.get("US-002").validation == ()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "validation: python3 -m unittest",
+        "validation: ['']",
+        "validation: ['   ']",
+        "validation: [3]",
+        "validation: ['pytest && echo done']",
+        "validation: ['pytest | tee log']",
+        "validation: [\"unterminated 'quote\"]",
+    ],
+)
+def test_invalid_validation_commands_are_rejected(tmp_path: Path, extra: str) -> None:
+    _story(tmp_path, "US-001", extra=extra)
+
+    with pytest.raises(DevPlaneError, match="validation") as excinfo:
+        load_backlog(tmp_path)
+
+    assert "unknown" not in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
 # readiness
 # ---------------------------------------------------------------------------
 

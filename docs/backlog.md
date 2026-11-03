@@ -16,6 +16,8 @@ depends_on: []
 write_scope:
   - src/devplane/guard.py
   - tests/test_guard.py
+validation:
+  - uv run pytest tests/test_guard.py
 feature: 001-write-scope-guard
 ---
 
@@ -30,6 +32,7 @@ Free-form Markdown: description and acceptance criteria.
 | `priority` | `low`, `normal` (default), `high` or `urgent` |
 | `depends_on` | Ids of other stories; unknown ids, self-dependencies and cycles are rejected |
 | `write_scope` | Scopes in the [bounded glob grammar](#write-scope-grammar); required for `ready`, `in_progress`, `review` and `done` |
+| `validation` | Optional list of exact commands that validate this story. They replace the run's default validation for this story only. Each is one line, runs without a shell, and shell operators such as `&&`, `\|` and `;` are rejected |
 | `feature` | Optional identifier of the Spec Kit feature the story belongs to |
 
 Unknown keys, symlinked files or directories, files over 256 KiB, duplicate ids and scopes that target a governed root (`.agents`, `.claude`, `.devplane`, `.git`, `.hermes`, `.opencode`, `.specify`, `specs`) are rejected.
@@ -96,4 +99,6 @@ What happens:
 
 If a run fails, the stories stay `in_progress` and `devplane retry <run-id>` reuses the commits that were valid. `implement --execution-plan` and `retry` refuse to continue if a story was edited after the plan was made; status changes alone do not count as drift.
 
-Limits: one batch per invocation; validation commands come from `--validation` or the catalog; the backlog is not updated until `integrate`, so a failed run is never marked as finished; there is no event history yet.
+Validation is per story: a story's own `validation` commands are used if it has any, otherwise the `--validation` commands or the catalog's. Stories in one batch are often unrelated, so a single command that fits all of them (for example a test suite that only some of them create) usually does not exist; give each story the command that proves it. A run with no validation for some story is refused before anything is claimed. Editing a story's `validation` after planning counts as drift.
+
+Limits: one batch per invocation; the backlog is not updated until `integrate`, so a failed run is never marked as finished; there is no event history yet.
