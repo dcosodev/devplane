@@ -394,3 +394,66 @@ def test_codex_adapter_rejects_provider() -> None:
 
     with pytest.raises(DevPlaneError, match="does not accept provider"):
         build_agent_args(request, config)
+
+
+def _guarded_config(**options: object) -> AgentRuntimeConfig:
+    return AgentRuntimeConfig(
+        adapter="claude",
+        executable="claude",
+        provider=None,
+        model=None,
+        options={"writeGuard": True, **options},  # type: ignore[dict-item]
+    )
+
+
+def test_claude_adapter_registers_the_write_guard_hook_when_enabled() -> None:
+    import json
+    import shlex
+    import sys
+
+    policy = Path("/state/guard-a1.json")
+    request = SessionRequest("a1", "implement task", Path("/tmp/work"), guard_policy=policy)
+
+    args = build_agent_args(request, _guarded_config())
+
+    settings = json.loads(args[args.index("--settings") + 1])
+    (entry,) = settings["hooks"]["PreToolUse"]
+    assert entry["matcher"] == "Edit|Write|MultiEdit|NotebookEdit"
+    (hook,) = entry["hooks"]
+    assert hook["type"] == "command"
+    assert shlex.split(hook["command"]) == [
+        sys.executable, "-m", "devplane", "guard", "--policy", str(policy),
+    ]
+    assert args[-1] == request.prompt
+
+
+def test_claude_adapter_adds_no_settings_without_the_write_guard_option() -> None:
+    request = SessionRequest("a1", "implement task", Path("/tmp/work"))
+    config = AgentRuntimeConfig("claude", "claude", None, None, {})
+
+    assert "--settings" not in build_agent_args(request, config)
+
+
+def test_enabled_write_guard_without_a_policy_fails_closed() -> None:
+    request = SessionRequest("a1", "implement task", Path("/tmp/work"))
+
+    with pytest.raises(DevPlaneError, match="write guard"):
+        build_agent_args(request, _guarded_config())
+
+
+def test_write_guard_option_must_be_a_boolean() -> None:
+    request = SessionRequest("a1", "x", Path("/tmp/work"), guard_policy=Path("/state/g.json"))
+
+    with pytest.raises(DevPlaneError, match="writeGuard"):
+        build_agent_args(
+            request, AgentRuntimeConfig("claude", "claude", None, None, {"writeGuard": "yes"})
+        )
+
+
+@pytest.mark.parametrize("adapter", ["hermes", "opencode"])
+def test_other_adapters_reject_the_write_guard_option(adapter: str) -> None:
+    request = SessionRequest("a1", "x", Path("/tmp/work"))
+    config = AgentRuntimeConfig(adapter, adapter, None, None, {"writeGuard": True})
+
+    with pytest.raises(DevPlaneError, match="unsupported"):
+        build_agent_args(request, config)

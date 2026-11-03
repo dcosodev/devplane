@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from .core import GOVERNED_ROOTS, DevPlaneError
+from .scopes import scopes_overlap, validate_scope
 from .tasks import TaskPhase, build_execution_batches
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
@@ -113,6 +114,13 @@ def _safe_relative_path(value: str, *, label: str, governance: bool = False) -> 
     return path.as_posix()
 
 
+def _normalize_scope(scope: str) -> str:
+    """Express a trailing ``dir/*`` as the supported ``dir/**`` tree scope."""
+    if scope.endswith("/*"):
+        scope = f"{scope}*"
+    return validate_scope(scope)
+
+
 def _phase_id(index: int, phase: TaskPhase) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", phase.name.lower()).strip("-") or "phase"
     return f"p{index + 1}-{slug}"[:63].rstrip("-")
@@ -149,7 +157,11 @@ def _paths_for_phase(phase: TaskPhase, feature_dir: PurePosixPath) -> tuple[str,
                 reads_approved_artifact = True
                 continue
             try:
-                paths.add(_safe_relative_path(candidate, label="write scope", governance=True))
+                paths.add(
+                    _normalize_scope(
+                        _safe_relative_path(candidate, label="write scope", governance=True)
+                    )
+                )
             except DevPlaneError:
                 unsafe_candidates.append(candidate)
     if unsafe_candidates:
@@ -171,35 +183,12 @@ def _allows_empty_commit(phase: TaskPhase) -> bool:
     )
 
 
-def _scope_prefix(scope: str) -> tuple[tuple[str, ...], bool]:
-    parts = PurePosixPath(scope).parts
-    prefix: list[str] = []
-    wildcard = False
-    for part in parts:
-        if "*" in part:
-            wildcard = True
-            break
-        prefix.append(part)
-    return tuple(prefix), wildcard
-
-
-def _scopes_overlap(left: str, right: str) -> bool:
-    left_prefix, left_wild = _scope_prefix(left)
-    right_prefix, right_wild = _scope_prefix(right)
-    if not left_wild and not right_wild:
-        return left_prefix == right_prefix
-    if left_wild and right_wild:
-        return left_prefix[: len(right_prefix)] == right_prefix or right_prefix[: len(left_prefix)] == left_prefix
-    wildcard_prefix, concrete = (left_prefix, right_prefix) if left_wild else (right_prefix, left_prefix)
-    return concrete[: len(wildcard_prefix)] == wildcard_prefix
-
-
 def _validate_parallel_scopes(assignments: list[ExecutionAssignment]) -> None:
     for index, left in enumerate(assignments):
         for right in assignments[index + 1 :]:
             for left_scope in left.allowed_paths:
                 for right_scope in right.allowed_paths:
-                    if _scopes_overlap(left_scope, right_scope):
+                    if scopes_overlap(left_scope, right_scope):
                         raise DevPlaneError(
                             "overlapping write scope in parallel batch: "
                             f"{left.assignment_id}:{left_scope} and {right.assignment_id}:{right_scope}"
@@ -409,6 +398,7 @@ def load_execution_plan(path: Path) -> ExecutionPlan:
             raise DevPlaneError("execution plan assignment requires allowed paths")
         for scope in assignment.allowed_paths:
             _safe_relative_path(scope, label="write scope", governance=True)
+            validate_scope(scope)
         if not assignment.validation or any(
             not command.strip() or any(character in command for character in "\x00\r\n")
             for command in assignment.validation

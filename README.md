@@ -257,7 +257,7 @@ Run `uv run devplane COMMAND --help` for exact options.
 
 DevPlane is not an operating-system sandbox.
 
-Git worktrees isolate branches and files, not processes, network access, credentials, or the host filesystem. Agent runtimes can access whatever the host account and their own permission systems allow. DevPlane's write-scope enforcement is authoritative after execution rather than syscall-level prevention.
+Git worktrees isolate branches and files, not processes, network access, credentials, or the host filesystem. Agent runtimes can access whatever the host account and their own permission systems allow. DevPlane's write-scope enforcement is authoritative after execution rather than syscall-level prevention. The optional Claude Code write guard is a fail-fast aid, not a security boundary: it stops an out-of-scope file write early instead of after a full run (see `docs/runtime-adapters.md`). Isolating the host is the user's and the runtime's responsibility.
 
 Catalog YAML and Markdown are configuration and prompt material. Treat external catalogs like code: review them before use. Validation commands are executable contract data and must be trusted. Catalogs are not signed, and local JSONL audit logs are not cryptographically chained.
 

@@ -421,3 +421,117 @@ def test_integrate_pipeline_validates_before_moving_project_head(tmp_path: Path)
 def test_agent_command_directories_are_read_only_for_assignments(root: str) -> None:
     with pytest.raises(DevPlaneError, match="governed and read-only"):
         _safe_changed_path(f"{root}/skills/speckit-plan/SKILL.md")
+
+
+def test_is_allowed_matches_tree_scope_at_any_depth() -> None:
+    from devplane.pipeline import _is_allowed
+
+    assert _is_allowed("src/auth/a/b.py", ("src/auth/**",)) is True
+    assert _is_allowed("src/billing/a.py", ("src/auth/**",)) is False
+
+
+def test_is_allowed_does_not_let_star_cross_directories() -> None:
+    from devplane.pipeline import _is_allowed
+
+    assert _is_allowed("src/a.py", ("src/*.py",)) is True
+    assert _is_allowed("src/x/a.py", ("src/*.py",)) is False
+
+
+def test_execution_pipeline_gives_claude_sessions_a_scoped_guard_policy(tmp_path: Path) -> None:
+    import json
+
+    from devplane.agent_runtime import AgentRuntimeConfig
+
+    tasks = "## Phase 1: Setup\n- [ ] T001 Create src/service.py\n"
+    project, base = _git_project(tmp_path, tasks)
+    plan = build_execution_plan(
+        parse_tasks_markdown(tasks),
+        run_id="guarded",
+        source_tasks="tasks.md",
+        manifest_digest="sha256:manifest",
+        base_commit=base,
+        validation_commands=["python3 -c pass"],
+    )
+    seen = []
+
+    def sessions_fn(requests, max_workers, runner=None):
+        request = requests[0]
+        seen.append(
+            (request.cwd, request.guard_policy, json.loads(request.guard_policy.read_text()))
+        )
+        return [SessionResult(request.task_id, 1, "", "stop here")]
+
+    run_execution_pipeline(
+        project,
+        plan,
+        max_agents=1,
+        sessions_fn=sessions_fn,
+        runtime_config=AgentRuntimeConfig("claude", "claude", None, None, {"writeGuard": True}),
+    )
+
+    (cwd, policy_path, policy), = seen
+    assert policy["root"] == str(cwd.resolve())
+    assert policy["allowed_paths"] == list(plan.assignments[0].allowed_paths)
+    assert policy_path.is_relative_to(project / ".git" / "devplane" / "runs" / "guarded")
+    assert not policy_path.is_relative_to(cwd)
+
+
+def test_execution_pipeline_creates_no_guard_policy_by_default(tmp_path: Path) -> None:
+    tasks = "## Phase 1: Setup\n- [ ] T001 Create src/service.py\n"
+    project, base = _git_project(tmp_path, tasks)
+    plan = build_execution_plan(
+        parse_tasks_markdown(tasks),
+        run_id="unguarded",
+        source_tasks="tasks.md",
+        manifest_digest="sha256:manifest",
+        base_commit=base,
+        validation_commands=["python3 -c pass"],
+    )
+    seen = []
+
+    def sessions_fn(requests, max_workers, runner=None):
+        seen.append(requests[0].guard_policy)
+        return [SessionResult(requests[0].task_id, 1, "", "stop here")]
+
+    run_execution_pipeline(project, plan, max_agents=1, sessions_fn=sessions_fn)
+
+    assert seen == [None]
+
+
+def test_execution_pipeline_never_runs_an_agent_unguarded_when_the_policy_cannot_be_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from devplane.agent_runtime import AgentRuntimeConfig
+
+    tasks = "## Phase 1: Setup\n- [ ] T001 Create src/service.py\n"
+    project, base = _git_project(tmp_path, tasks)
+    plan = build_execution_plan(
+        parse_tasks_markdown(tasks),
+        run_id="no-policy",
+        source_tasks="tasks.md",
+        manifest_digest="sha256:manifest",
+        base_commit=base,
+        validation_commands=["python3 -c pass"],
+    )
+    launched = []
+
+    def failing_write(*_args: object, **_kwargs: object) -> None:
+        raise DevPlaneError("cannot write guard policy")
+
+    def sessions_fn(requests, max_workers, runner=None):
+        launched.append(requests)
+        return []
+
+    monkeypatch.setattr("devplane.pipeline.write_policy", failing_write)
+
+    result = run_execution_pipeline(
+        project,
+        plan,
+        max_agents=1,
+        sessions_fn=sessions_fn,
+        runtime_config=AgentRuntimeConfig("claude", "claude", None, None, {"writeGuard": True}),
+    )
+
+    assert launched == []
+    assert result.assignments[0].status == "failed"
+    assert "cannot write guard policy" in (result.assignments[0].error or "")

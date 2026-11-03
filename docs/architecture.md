@@ -163,7 +163,7 @@ Integration requires a clean project branch, the unchanged approved checkpoint, 
 
 Git worktrees isolate Git branches and files, not the host. Runtime permission systems and the host account remain part of the trusted computing base. A compromised or malicious agent executable can access anything its process identity can access.
 
-Declarative shell and write patterns are policy inputs and generated context. Authoritative write-scope checks occur after execution; they cannot undo external side effects. Use containers or stronger platform sandboxing when pre-execution isolation is required.
+Declarative shell and write patterns are policy inputs and generated context. Authoritative write-scope checks occur after execution; they cannot undo external side effects. Use containers or stronger platform sandboxing when pre-execution isolation is required; DevPlane does not provide or manage a sandbox. Optional runtime hooks, such as the Claude Code write guard, only fail fast on out-of-scope file writes and never replace the post-run check.
 
 Treat catalog YAML, Markdown, project repositories, task descriptions, agent executables, and validation commands as trusted code/configuration. Review third-party catalogs before synchronization.
 

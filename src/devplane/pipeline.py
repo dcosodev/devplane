@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import json
 import re
@@ -16,7 +15,9 @@ from pathlib import Path, PurePosixPath
 from .agent_runtime import AgentRuntimeConfig, SessionRequest, SessionResult
 from .core import GOVERNED_ROOTS, DevPlaneError
 from .execution_plan import ExecutionAssignment, ExecutionPlan
+from .guard import GuardPolicy, write_policy
 from .prompts import load_template, render_template
+from .scopes import path_in_scope
 from .worktrees import WorktreeHandle
 
 _SAFE_COMMIT = re.compile(r"^[0-9a-fA-F]{7,64}$")
@@ -174,6 +175,30 @@ def _assignment_prompt(assignment: ExecutionAssignment, plan: ExecutionPlan) -> 
     )
 
 
+def _guard_policy_path(project: Path, plan: ExecutionPlan, assignment: ExecutionAssignment) -> Path:
+    return (
+        project / ".git" / "devplane" / "runs" / plan.run_id / f"guard-{assignment.assignment_id}.json"
+    )
+
+
+def _write_guard_policy(
+    project: Path,
+    plan: ExecutionPlan,
+    assignment: ExecutionAssignment,
+    handle: WorktreeHandle,
+    runtime_config: AgentRuntimeConfig | None,
+) -> Path | None:
+    """Write the per-assignment write-guard policy when the runtime asks for one."""
+    if runtime_config is None or runtime_config.options.get("writeGuard") is not True:
+        return None
+    path = _guard_policy_path(project, plan, assignment)
+    write_policy(
+        path,
+        GuardPolicy(root=handle.path.resolve(), allowed_paths=assignment.allowed_paths),
+    )
+    return path
+
+
 def _command_argv(command: str) -> list[str]:
     try:
         argv = shlex.split(command)
@@ -194,7 +219,7 @@ def _safe_changed_path(value: str) -> str:
 
 
 def _is_allowed(path: str, scopes: tuple[str, ...]) -> bool:
-    return any(path == scope or fnmatch.fnmatchcase(path, scope) for scope in scopes)
+    return any(path_in_scope(path, scope) for scope in scopes)
 
 
 def _assignment_batches(assignments: tuple[ExecutionAssignment, ...]) -> list[list[ExecutionAssignment]]:
@@ -312,15 +337,35 @@ def run_execution_pipeline(
             else:
                 handles[assignment.assignment_id] = handle
 
-        requests = [
-            SessionRequest(
-                task_id=assignment.assignment_id,
-                prompt=_assignment_prompt(assignment, plan),
-                cwd=handles[assignment.assignment_id].path,
+        requests = []
+        for assignment in batch:
+            handle = handles.get(assignment.assignment_id)
+            if handle is None:
+                continue
+            try:
+                guard_policy = _write_guard_policy(project, plan, assignment, handle, runtime_config)
+            except DevPlaneError as exc:
+                # Never run an agent unguarded when the guard was requested.
+                handles.pop(assignment.assignment_id)
+                batch_runs[assignment.assignment_id] = AssignmentRun(
+                    assignment.assignment_id,
+                    assignment.phase,
+                    "failed",
+                    base_commit=current_base,
+                    branch=handle.branch,
+                    worktree=str(handle.path),
+                    error=str(exc),
+                )
+                failed = True
+                continue
+            requests.append(
+                SessionRequest(
+                    task_id=assignment.assignment_id,
+                    prompt=_assignment_prompt(assignment, plan),
+                    cwd=handle.path,
+                    guard_policy=guard_policy,
+                )
             )
-            for assignment in batch
-            if assignment.assignment_id in handles
-        ]
         try:
             sessions = (
                 run_many(
