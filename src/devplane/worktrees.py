@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from .commands import run_checked
+from .commands import describe_dirty, run_checked
 from .core import DevPlaneError
 
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
@@ -72,7 +72,9 @@ def create_worktree(
     execute = _runner_or_default(runner)
     status = execute(["git", "status", "--porcelain"], project)
     if getattr(status, "stdout", ""):
-        raise DevPlaneError(f"project must have a clean git worktree: {project}")
+        raise DevPlaneError(
+            f"project must have a clean git worktree: {project}{describe_dirty(status.stdout)}"
+        )
 
     branch = f"devplane/{run_id}/{task_id}"
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
@@ -195,8 +197,9 @@ def plan_worktree_cleanup(project: Path, run_id: str) -> WorktreeCleanupPlan:
 def apply_worktree_cleanup(project: Path, cleanup: WorktreeCleanupPlan) -> None:
     """Apply an inspected plan after rechecking branch and path safety."""
     project = project.expanduser().resolve()
-    if run_checked(["git", "status", "--porcelain"], project).stdout:
-        raise DevPlaneError("project must be clean before worktree cleanup")
+    project_status = run_checked(["git", "status", "--porcelain"], project).stdout
+    if project_status:
+        raise DevPlaneError(f"project must be clean before worktree cleanup{describe_dirty(project_status)}")
     current = plan_worktree_cleanup(project, cleanup.run_id)
     if not set(cleanup.safe_branches).issubset(current.safe_branches):
         raise DevPlaneError("cleanup safety changed; generate a fresh dry-run")

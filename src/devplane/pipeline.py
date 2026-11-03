@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 
 from .agent_runtime import AgentRuntimeConfig, SessionRequest, SessionResult
+from .commands import describe_dirty
 from .core import GOVERNED_ROOTS, DevPlaneError
 from .execution_plan import ExecutionAssignment, ExecutionPlan
 from .guard import GuardPolicy, write_policy
@@ -293,7 +294,7 @@ def run_execution_pipeline(
 
     status = run_command(["git", "status", "--porcelain"], project).stdout
     if status:
-        raise DevPlaneError("project must be clean before executing a plan")
+        raise DevPlaneError(f"project must be clean before executing a plan{describe_dirty(status)}")
     current_head = run_command(["git", "rev-parse", "HEAD"], project).stdout.strip()
     if current_head != plan.base_commit:
         raise DevPlaneError(
@@ -575,8 +576,9 @@ def integrate_pipeline(
         raise DevPlaneError("only a completed matching pipeline run can be integrated")
     if not _SAFE_COMMIT.fullmatch(result.final_commit):
         raise DevPlaneError("pipeline final commit is invalid")
-    if run_command(["git", "status", "--porcelain"], project).stdout:
-        raise DevPlaneError("project must be clean before integration")
+    project_status = run_command(["git", "status", "--porcelain"], project).stdout
+    if project_status:
+        raise DevPlaneError(f"project must be clean before integration{describe_dirty(project_status)}")
     head = run_command(["git", "rev-parse", "HEAD"], project).stdout.strip()
     if head != plan.base_commit:
         raise DevPlaneError(
@@ -605,8 +607,11 @@ def integrate_pipeline(
     ).stdout.strip()
     if validation_head != result.final_commit:
         raise DevPlaneError("pipeline final worktree commit drift detected")
-    if run_command(["git", "status", "--porcelain"], validation_worktree).stdout:
-        raise DevPlaneError("pipeline final worktree must be clean before integration")
+    worktree_status = run_command(["git", "status", "--porcelain"], validation_worktree).stdout
+    if worktree_status:
+        raise DevPlaneError(
+            f"pipeline final worktree must be clean before integration{describe_dirty(worktree_status)}"
+        )
     unique_commands = dict.fromkeys(
         command for assignment in plan.assignments for command in assignment.validation
     )

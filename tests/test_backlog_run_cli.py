@@ -150,6 +150,15 @@ def test_run_and_integrate_move_stories_through_the_backlog(project: Path) -> No
     assert _git(project, "status", "--porcelain") == ""
     assert "co-authored" not in _git(project, "log", "--format=%B").lower()
 
+    audit = [
+        json.loads(line)
+        for line in (project / ".git" / "devplane" / "audit" / "runs.jsonl").read_text().splitlines()
+    ]
+    review = next(item for item in audit if item["event"] == "backlog.review.recorded")
+    assert review["run_id"] == "run-e2e"
+    assert review["stories"] == ["US-001", "US-002"]
+    assert any(item["event"] == "backlog.run.started" for item in audit)
+
     # US-003 overlapped US-001, so it becomes plannable only once US-001 is done.
     again = runner.invoke(app, ["backlog", "plan", "--project", str(project)])
     assert json.loads(again.output)["deferred"]["US-003"].startswith("overlaps US-001 (review)")
@@ -276,3 +285,15 @@ def test_the_claim_commit_leaves_no_co_author_lines(project: Path) -> None:
     assert _run(project).exit_code == 0
 
     assert "co-authored" not in _git(project, "log", "-1", "--format=%B").lower()
+
+
+def test_plan_execution_names_the_files_that_make_the_project_dirty(project: Path) -> None:
+    (project / "tasks.md").write_text("## Phase 1: Setup\n- [ ] T001 Create src/x.py\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["plan-execution", "--tasks-file", "tasks.md", "--validation", "python3 -c pass", "--project", str(project)],
+    )
+
+    assert result.exit_code == 1
+    assert "creating an execution plan: ?? tasks.md" in result.output

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from devplane.commands import run_checked
+from devplane.commands import describe_dirty, run_checked
 from devplane.core import DevPlaneError
 
 
@@ -51,3 +51,24 @@ def test_run_checked_reports_timeout_without_echoing_arguments(monkeypatch, tmp_
 
     assert "timed out" in str(error.value)
     assert secret not in str(error.value)
+
+
+def test_describe_dirty_names_the_first_paths_with_their_status_codes() -> None:
+    status = "?? calc/__pycache__/\n M src/a.py\nA  new.txt\n"
+
+    assert describe_dirty(status) == ": ?? calc/__pycache__/, M src/a.py, A new.txt"
+
+
+def test_describe_dirty_summarises_long_listings() -> None:
+    status = "".join(f"?? file{index}.txt\n" for index in range(8))
+
+    described = describe_dirty(status)
+
+    assert described.startswith(": ?? file0.txt, ?? file1.txt")
+    assert "file4.txt" in described and "file5.txt" not in described
+    assert described.endswith("(and 3 more)")
+
+
+def test_describe_dirty_is_empty_for_a_clean_status() -> None:
+    assert describe_dirty("") == ""
+    assert describe_dirty("\n  \n") == ""

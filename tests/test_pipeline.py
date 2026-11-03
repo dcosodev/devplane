@@ -608,7 +608,7 @@ def test_a_validation_that_edits_tracked_files_still_blocks_integration(tmp_path
         project, plan, max_agents=1, sessions_fn=_commit_session(paths), command_runner=run_checked
     )
 
-    with pytest.raises(DevPlaneError, match="must be clean"):
+    with pytest.raises(DevPlaneError, match=r"must be clean.*src/service\.py"):
         integrate_pipeline(project, plan, result, command_runner=run_checked)
 
 
@@ -625,3 +625,48 @@ def test_validation_cleanup_refuses_a_directory_that_is_not_a_worktree_root(tmp_
         _run_validation((), inner, run_checked)
 
     assert keep.read_text(encoding="utf-8") == "untracked and precious\n"
+
+
+def test_a_dirty_project_is_rejected_with_the_files_that_block_it(tmp_path: Path) -> None:
+    tasks = "## Phase 1: Setup\n- [ ] T001 Create src/service.py\n"
+    project, base = _git_project(tmp_path, tasks)
+    plan = _plan_for(base, tasks, "dirty-project", "python3 -c pass")
+    (project / "stray.txt").write_text("untracked\n", encoding="utf-8")
+
+    with pytest.raises(DevPlaneError, match=r"must be clean before executing a plan: \?\? stray\.txt"):
+        run_execution_pipeline(
+            project, plan, max_agents=1, sessions_fn=lambda *a, **k: [], command_runner=run_checked
+        )
+
+
+def test_worktree_cleanup_rejects_a_dirty_project_naming_the_files(tmp_path: Path) -> None:
+    project, base = _git_project(tmp_path)
+    handle = create_worktree(project, "cleanup-names", "validation", base)
+    cleanup = plan_worktree_cleanup(project, "cleanup-names")
+    assert str(handle.path) in cleanup.worktrees
+    (project / "stray.txt").write_text("untracked\n", encoding="utf-8")
+
+    with pytest.raises(DevPlaneError, match=r"before worktree cleanup: \?\? stray\.txt"):
+        apply_worktree_cleanup(project, cleanup)
+
+
+def test_integration_rejects_a_dirty_project_naming_the_files(tmp_path: Path) -> None:
+    tasks = "## Phase 1: Setup\n- [ ] T001 Create src/service.py\n"
+    project, base = _git_project(tmp_path, tasks)
+    plan = _plan_for(base, tasks, "dirty-integration", "python3 -c pass")
+    paths = {item.assignment_id: item.allowed_paths[0] for item in plan.assignments}
+    result = run_execution_pipeline(
+        project, plan, max_agents=1, sessions_fn=_commit_session(paths), command_runner=run_checked
+    )
+    (project / "stray.txt").write_text("untracked\n", encoding="utf-8")
+
+    with pytest.raises(DevPlaneError, match=r"must be clean before integration: \?\? stray\.txt"):
+        integrate_pipeline(project, plan, result, command_runner=run_checked)
+
+
+def test_creating_a_worktree_rejects_a_dirty_project_naming_the_files(tmp_path: Path) -> None:
+    project, base = _git_project(tmp_path)
+    (project / "stray.txt").write_text("untracked\n", encoding="utf-8")
+
+    with pytest.raises(DevPlaneError, match=r"clean git worktree.*\?\? stray\.txt"):
+        create_worktree(project, "dirty-create", "task", base)

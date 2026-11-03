@@ -955,7 +955,9 @@ def plan_execution(
             raise DevPlaneError(f"tasks file must be a file inside the project: {tasks_file}")
         status = commands.run_checked(["git", "status", "--porcelain"], project).stdout
         if status:
-            raise DevPlaneError("project must be clean before creating an execution plan")
+            raise DevPlaneError(
+                f"project must be clean before creating an execution plan{commands.describe_dirty(status)}"
+            )
         base_commit = commands.run_checked(["git", "rev-parse", "HEAD"], project).stdout.strip()
         if not re.fullmatch(r"[0-9a-fA-F]{7,64}", base_commit):
             raise DevPlaneError("git rev-parse HEAD did not return a valid object id")
@@ -1182,6 +1184,17 @@ def integrate_command(
             "final_commit": final_commit,
         },
     )
+    if backlog_review:
+        _append_audit(
+            project,
+            {
+                "event": "backlog.review.recorded",
+                "run_id": run_id,
+                "recorded_at": datetime.now(UTC).isoformat(),
+                "final_commit": final_commit,
+                "stories": backlog_review,
+            },
+        )
     payload: dict[str, object] = {"run_id": run_id, "status": "integrated", "final_commit": final_commit}
     if backlog_review is not None:
         payload["backlog_review"] = backlog_review
@@ -1466,10 +1479,22 @@ def backlog_status(
     story_id: str, new_status: str, project: _ProjectOption = Path(".")
 ) -> None:
     """Move a story to a new status if the transition is allowed."""
+    root = _project(project)
     try:
-        story = set_status(_project(project), story_id, new_status)
+        previous = load_backlog(root).get(story_id).status
+        story = set_status(root, story_id, new_status)
     except DevPlaneError as exc:
         _fail(exc)
+    _append_audit(
+        root,
+        {
+            "event": "backlog.status.changed",
+            "recorded_at": datetime.now(UTC).isoformat(),
+            "story": story.id,
+            "from": previous,
+            "to": story.status,
+        },
+    )
     _emit({"id": story.id, "status": story.status})
 
 

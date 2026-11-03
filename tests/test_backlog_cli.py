@@ -119,3 +119,20 @@ def test_status_moves_a_story_and_rejects_invalid_transitions(tmp_path: Path) ->
     assert refused.exit_code == 1
     assert "transition" in refused.output
     assert json.loads(_run(tmp_path, "show", "US-001").output)["status"] == "ready"
+
+
+def _audit(project: Path) -> list[dict]:
+    path = project / ".devplane" / "audit" / "runs.jsonl"
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+
+
+def test_status_changes_are_recorded_in_the_audit_log(tmp_path: Path) -> None:
+    _write(tmp_path, "US-001", status="backlog", scope="src/a.py")
+
+    assert _run(tmp_path, "status", "US-001", "ready").exit_code == 0
+    assert _run(tmp_path, "status", "US-001", "done").exit_code == 1
+
+    (event,) = _audit(tmp_path)
+    assert event["event"] == "backlog.status.changed"
+    assert (event["story"], event["from"], event["to"]) == ("US-001", "backlog", "ready")
+    assert event["recorded_at"]
