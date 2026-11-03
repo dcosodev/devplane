@@ -101,4 +101,17 @@ If a run fails, the stories stay `in_progress` and `devplane retry <run-id>` reu
 
 Validation is per story: a story's own `validation` commands are used if it has any, otherwise the `--validation` commands or the catalog's. Stories in one batch are often unrelated, so a single command that fits all of them (for example a test suite that only some of them create) usually does not exist; give each story the command that proves it. A run with no validation for some story is refused before anything is claimed. Editing a story's `validation` after planning counts as drift.
 
-Limits: one batch per invocation; the backlog is not updated until `integrate`, so a failed run is never marked as finished; there is no event history yet.
+Limits: one batch per invocation; the backlog is not updated until `integrate`, so a failed run is never marked as finished; see [Audit trail](#audit-trail).
+
+## Audit trail
+
+The story files and the `chore(backlog): …` commits are the history of what each story contains and when DevPlane moved it. Events are also appended to the local audit log (`.git/devplane/audit/runs.jsonl`, or `.devplane/audit/runs.jsonl` outside a Git repository):
+
+| Event | When | Fields |
+| --- | --- | --- |
+| `backlog.run.started` | `backlog run` claimed a batch | `run_id`, `base_commit`, `stories`, `manifest_digest` |
+| `pipeline.assignment` | each assignment of a run finished | the existing pipeline fields |
+| `backlog.status.changed` | `backlog status` moved a story | `story`, `from`, `to` |
+| `backlog.review.recorded` | `integrate` moved integrated stories to `review` | `run_id`, `stories`, `final_commit` |
+
+The log is local and not tamper-evident.

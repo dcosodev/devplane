@@ -25,7 +25,7 @@ from pathlib import Path
 import yaml
 
 from .backlog import BACKLOG_DIRECTORY, Story, load_backlog, set_status
-from .commands import run_checked
+from .commands import describe_dirty, run_checked
 from .core import DevPlaneError
 from .execution_plan import (
     ExecutionAssignment,
@@ -121,8 +121,9 @@ def verify_backlog_source(project: Path, plan: ExecutionPlan) -> None:
 
 
 def _require_clean(project: Path, action: str) -> None:
-    if run_checked(["git", "status", "--porcelain"], project).stdout:
-        raise DevPlaneError(f"project must be clean before {action}")
+    status = run_checked(["git", "status", "--porcelain"], project).stdout
+    if status:
+        raise DevPlaneError(f"project must be clean before {action}{describe_dirty(status)}")
 
 
 def _commit_status(project: Path, stories: Sequence[Story], status: str, message: str) -> None:

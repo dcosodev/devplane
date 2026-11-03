@@ -287,7 +287,7 @@ def test_claim_requires_a_clean_project(tmp_path: Path) -> None:
     _commit_all(project)
     (project / "README.md").write_text("dirty\n", encoding="utf-8")
 
-    with pytest.raises(DevPlaneError, match="clean"):
+    with pytest.raises(DevPlaneError, match=r"clean.*M README\.md"):
         claim_stories(project, _stories(project, "US-001"))
 
     assert _stories(project, "US-001")[0].status == "ready"

@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
+- Audit events for the backlog: `backlog.status.changed` when `devplane backlog status` moves a story and `backlog.review.recorded` when `integrate` moves integrated stories to `review`, alongside the existing `backlog.run.started`.
 - Bounded write-scope grammar (`devplane.scopes`): literal segments, `*` and `?` within a segment, and `**` only as the final segment, with exact membership and overlap decisions.
 - `devplane guard --policy <file>`: a Claude Code `PreToolUse` hook that blocks `Edit`, `Write`, `MultiEdit` and `NotebookEdit` calls outside an assignment's write scopes, outside its worktree (including through symlinks), or into governed roots. Every failure path exits with 2, the only code Claude Code treats as a block.
 - `python -m devplane` entry point.
@@ -18,6 +19,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- Errors that reject a dirty project or worktree (`claim`, `plan-execution`, `implement`, `integrate`, `cleanup`, worktree creation) now name the first files that block it, for example `project must be clean before integration: ?? calc/__pycache__/`.
 - Assignment prompts now ask agents not to add `Co-Authored-By` or other tool attribution lines to their commit messages. The Claude Code adapter also turns off Claude Code's own commit and pull-request attribution for DevPlane sessions (`--settings`), because those commits are fast-forwarded into the project. Set the Claude runtime option `commitAttribution: true` to keep it.
 - Parallel-batch overlap detection now uses exact scope overlap instead of a prefix approximation. Disjoint patterns such as `src/*.py` and `src/*.txt` are no longer reported as overlapping.
 - Execution plans express a trailing `dir/*` write scope as `dir/**`, preserving its reach over nested files.

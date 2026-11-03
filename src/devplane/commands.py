@@ -7,6 +7,21 @@ from pathlib import Path
 from .core import DevPlaneError
 
 
+def describe_dirty(status: str, limit: int = 5) -> str:
+    """Name the first paths of ``git status --porcelain`` output for an error message.
+
+    Returns an empty string for a clean status, otherwise ``": ?? a.txt, M b.py"``.
+    """
+    entries = [
+        f"{line[:2].strip()} {line[3:]}".strip() for line in status.splitlines() if line.strip()
+    ]
+    if not entries:
+        return ""
+    shown = ", ".join(entries[:limit])
+    extra = len(entries) - limit
+    return f": {shown}" + (f" (and {extra} more)" if extra > 0 else "")
+
+
 def run_checked(
     args: list[str],
     cwd: Path,
