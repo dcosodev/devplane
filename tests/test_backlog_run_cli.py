@@ -210,6 +210,18 @@ def test_failed_run_keeps_stories_in_progress_and_can_be_retried(
     assert _statuses(project)["US-001"] == "review"
 
 
+def test_retry_exits_with_one_when_the_run_still_fails(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DEVPLANE_FAKE_AGENT", "skip")
+    assert _run(project, "--run-id", "run-still-failing").exit_code == 1
+
+    retried = runner.invoke(app, ["retry", "run-still-failing", "--project", str(project)])
+
+    assert retried.exit_code == 1
+    assert json.loads(retried.output)["status"] == "failed"
+
+
 def test_retry_detects_a_story_edited_after_the_run(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

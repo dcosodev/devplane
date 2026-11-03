@@ -121,21 +121,26 @@ def _claude_permission_args(config: AgentRuntimeConfig) -> list[str]:
 
 
 _GUARDED_TOOLS = "Edit|Write|MultiEdit|NotebookEdit"
+_NO_ATTRIBUTION = {"commit": "", "pr": ""}
 
 
-def _claude_guard_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[str]:
-    """Register ``devplane guard`` as a PreToolUse hook for this session."""
-    enabled = config.options.get("writeGuard", False)
-    if not isinstance(enabled, bool):
-        raise DevPlaneError("Claude runtime option writeGuard must be a boolean")
-    if not enabled:
-        return []
+def _claude_option_flag(config: AgentRuntimeConfig, name: str) -> bool:
+    value = config.options.get(name, False)
+    if not isinstance(value, bool):
+        raise DevPlaneError(f"Claude runtime option {name} must be a boolean")
+    return value
+
+
+def _claude_write_guard_hooks(request: SessionRequest, config: AgentRuntimeConfig) -> dict[str, Any]:
+    """The PreToolUse hook that runs ``devplane guard``, or nothing when disabled."""
+    if not _claude_option_flag(config, "writeGuard"):
+        return {}
     if request.guard_policy is None:
         raise DevPlaneError("Claude write guard is enabled but this session has no guard policy")
     command = shlex.join(
         [sys.executable, "-m", "devplane", "guard", "--policy", str(request.guard_policy)]
     )
-    settings = {
+    return {
         "hooks": {
             "PreToolUse": [
                 {
@@ -145,7 +150,20 @@ def _claude_guard_args(request: SessionRequest, config: AgentRuntimeConfig) -> l
             ]
         }
     }
-    return ["--settings", json.dumps(settings, sort_keys=True)]
+
+
+def _claude_settings_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[str]:
+    """One ``--settings`` argument: write guard hook and commit attribution policy.
+
+    Claude Code adds a ``Co-Authored-By`` trailer to the commits it makes. Commits
+    made by assignment agents are fast-forwarded into the project, so attribution
+    is turned off unless ``commitAttribution: true`` is set.
+    """
+    settings: dict[str, Any] = {}
+    if not _claude_option_flag(config, "commitAttribution"):
+        settings["attribution"] = dict(_NO_ATTRIBUTION)
+    settings.update(_claude_write_guard_hooks(request, config))
+    return ["--settings", json.dumps(settings, sort_keys=True)] if settings else []
 
 
 def _claude_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[str]:
@@ -156,7 +174,7 @@ def _claude_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[st
         "text",
         "--no-session-persistence",
         *_claude_permission_args(config),
-        *_claude_guard_args(request, config),
+        *_claude_settings_args(request, config),
     ]
     if config.model:
         args.extend(["--model", config.model])
@@ -213,7 +231,7 @@ def _opencode_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[
 def build_agent_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[str]:
     allowed_options = {
         "hermes": {"toolsets", "maxTurns"},
-        "claude": {"permissionMode", "allowedTools", "writeGuard"},
+        "claude": {"permissionMode", "allowedTools", "writeGuard", "commitAttribution"},
         "codex": {"sandbox"},
         "opencode": {"agent"},
     }

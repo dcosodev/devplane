@@ -427,11 +427,56 @@ def test_claude_adapter_registers_the_write_guard_hook_when_enabled() -> None:
     assert args[-1] == request.prompt
 
 
-def test_claude_adapter_adds_no_settings_without_the_write_guard_option() -> None:
+def _claude_settings(args: list[str]) -> dict:
+    import json
+
+    return json.loads(args[args.index("--settings") + 1])
+
+
+def test_claude_adapter_turns_off_commit_attribution_by_default() -> None:
     request = SessionRequest("a1", "implement task", Path("/tmp/work"))
     config = AgentRuntimeConfig("claude", "claude", None, None, {})
 
+    args = build_agent_args(request, config)
+
+    assert _claude_settings(args) == {"attribution": {"commit": "", "pr": ""}}
+    assert args[-2:] == ["--", "implement task"]
+
+
+def test_claude_adapter_keeps_attribution_when_commit_attribution_is_enabled() -> None:
+    request = SessionRequest("a1", "implement task", Path("/tmp/work"))
+    config = AgentRuntimeConfig("claude", "claude", None, None, {"commitAttribution": True})
+
     assert "--settings" not in build_agent_args(request, config)
+
+
+def test_the_write_guard_and_attribution_settings_share_one_settings_argument() -> None:
+    policy = Path("/state/guard-a1.json")
+    request = SessionRequest("a1", "x", Path("/tmp/work"), guard_policy=policy)
+
+    both = build_agent_args(request, _guarded_config())
+    guard_only = build_agent_args(request, _guarded_config(commitAttribution=True))
+
+    assert both.count("--settings") == guard_only.count("--settings") == 1
+    assert set(_claude_settings(both)) == {"attribution", "hooks"}
+    assert set(_claude_settings(guard_only)) == {"hooks"}
+
+
+def test_commit_attribution_option_must_be_a_boolean() -> None:
+    request = SessionRequest("a1", "x", Path("/tmp/work"))
+    config = AgentRuntimeConfig("claude", "claude", None, None, {"commitAttribution": "yes"})
+
+    with pytest.raises(DevPlaneError, match="commitAttribution"):
+        build_agent_args(request, config)
+
+
+@pytest.mark.parametrize("adapter", ["hermes", "codex", "opencode"])
+def test_other_adapters_reject_the_commit_attribution_option(adapter: str) -> None:
+    request = SessionRequest("a1", "x", Path("/tmp/work"))
+    config = AgentRuntimeConfig(adapter, adapter, None, None, {"commitAttribution": True})
+
+    with pytest.raises(DevPlaneError, match="unsupported"):
+        build_agent_args(request, config)
 
 
 def test_enabled_write_guard_without_a_policy_fails_closed() -> None:

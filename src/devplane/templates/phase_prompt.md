@@ -12,5 +12,5 @@ Mandatory contract:
 4. Do not modify .devplane/, .specify/, or specs/; they are governance artifacts.
 5. Do not push, deploy, change accounts, or run destructive Git operations.
 6. Run the repository's native validation.
-7. Create a focused local commit before finishing.
+7. Create a focused local commit before finishing. Do not add Co-Authored-By or other tool attribution lines to the commit message.
 8. Return the SHA, modified files, commands run, exact results, and risks.

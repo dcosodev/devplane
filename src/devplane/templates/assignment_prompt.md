@@ -17,7 +17,7 @@ Contract:
 3. Follow TDD and run the specified validation.
 4. Do not modify .agents/, .claude/, .devplane/, .git/, .hermes/, .opencode/, .specify/, or specs/.
 5. Do not push, deploy, change accounts, or run destructive Git operations.
-6. Create a single focused local commit and leave the worktree clean.
+6. Create a single focused local commit and leave the worktree clean. Do not add Co-Authored-By or other tool attribution lines to the commit message.
 {final_contract_rules}
 
 Manifest digest: {manifest_digest}
