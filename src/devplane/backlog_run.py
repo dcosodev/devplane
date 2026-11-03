@@ -36,6 +36,10 @@ from .execution_plan import (
 BACKLOG_SOURCE = BACKLOG_DIRECTORY
 
 
+class NoReadyStories(DevPlaneError):
+    """No story can be started now; the message says why each one waits."""
+
+
 def stories_digest(stories: Sequence[Story]) -> str:
     """Hash the immutable content of stories, in the given order, ignoring status."""
     canonical = [

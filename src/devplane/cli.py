@@ -27,6 +27,7 @@ from .backlog import (
 )
 from .backlog_run import (
     BACKLOG_SOURCE,
+    NoReadyStories,
     build_backlog_plan,
     claim_stories,
     mark_ready_for_review,
@@ -1145,27 +1146,23 @@ def run_status(
     )
 
 
-@app.command("integrate")
-def integrate_command(
-    run_id: Annotated[str, typer.Argument(help="Completed DevPlane execution run ID")],
-    project: Annotated[Path, typer.Option("--project", help="Project root")] = Path("."),
-) -> None:
-    """Explicitly fast-forward a completed, reviewed pipeline into the project."""
-    project = _project(project)
+def _integrate_run(project: Path, run_id: str) -> dict[str, object]:
+    """Fast-forward a completed run into the project; raises DevPlaneError on failure.
+
+    The returned payload has ``backlog_error`` set when the integration succeeded but
+    the stories could not be moved to ``review``.
+    """
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", run_id):
-        _fail(DevPlaneError("run_id must be a safe identifier"))
+        raise DevPlaneError("run_id must be a safe identifier")
     state_dir = project / ".git" / "devplane" / "runs" / run_id
-    try:
-        resolved = sync_project(project, check=True)
-        _verify_contexts(project, resolved)
-        plan = load_execution_plan(state_dir / "execution-plan.yaml")
-        result = load_pipeline_run(state_dir / "result.json")
-        if plan.manifest_digest != resolved["metadata"]["sourceHash"]:
-            raise DevPlaneError("cannot integrate after manifest drift")
-        final_commit = integrate_pipeline(project, plan, result)
-        _update_feature_status(project, run_id, "integrated")
-    except DevPlaneError as exc:
-        _fail(exc)
+    resolved = sync_project(project, check=True)
+    _verify_contexts(project, resolved)
+    plan = load_execution_plan(state_dir / "execution-plan.yaml")
+    result = load_pipeline_run(state_dir / "result.json")
+    if plan.manifest_digest != resolved["metadata"]["sourceHash"]:
+        raise DevPlaneError("cannot integrate after manifest drift")
+    final_commit = integrate_pipeline(project, plan, result)
+    _update_feature_status(project, run_id, "integrated")
     backlog_review: list[str] | None = None
     backlog_error: str | None = None
     if plan.source_tasks == BACKLOG_SOURCE:
@@ -1203,8 +1200,22 @@ def integrate_command(
             f"integrated, but the backlog was not updated: {backlog_error}. "
             "Move the stories with `devplane backlog status`."
         )
+    return payload
+
+
+@app.command("integrate")
+def integrate_command(
+    run_id: Annotated[str, typer.Argument(help="Completed DevPlane execution run ID")],
+    project: Annotated[Path, typer.Option("--project", help="Project root")] = Path("."),
+) -> None:
+    """Explicitly fast-forward a completed, reviewed pipeline into the project."""
+    project = _project(project)
+    try:
+        payload = _integrate_run(project, run_id)
+    except DevPlaneError as exc:
+        _fail(exc)
     typer.echo(json.dumps(payload, indent=2))
-    if backlog_error is not None:
+    if "backlog_error" in payload:
         raise typer.Exit(1)
 
 
@@ -1498,63 +1509,148 @@ def backlog_status(
     _emit({"id": story.id, "status": story.status})
 
 
+def _select_batch(project: Path, max_parallel: int):
+    """The first parallel batch of ready stories, or ``NoReadyStories`` with the reasons."""
+    planned = plan_batches(load_backlog(project), max_parallel=max_parallel)
+    if not planned.batches:
+        notes = [f"{key}: {value}" for key, value in sorted(planned.deferred.items())]
+        notes += [f"{key} waits for {', '.join(value)}" for key, value in sorted(planned.waiting.items())]
+        raise NoReadyStories("no ready stories to run" + (f" ({'; '.join(notes)})" if notes else ""))
+    return list(planned.batches[0]), planned
+
+
+def _run_backlog_wave(
+    project: Path,
+    resolved: dict,
+    *,
+    run_id: str,
+    validations: list[str],
+    max_parallel: int,
+    max_agents: int,
+    runtime_config,
+):
+    """Claim the next batch and run it through the pipeline; returns (result, stories)."""
+    state_dir = project / ".git" / "devplane" / "runs" / run_id
+    if state_dir.exists():
+        raise DevPlaneError(f"run already exists: {run_id}")
+    batch, _ = _select_batch(project, max_parallel)
+    head = commands.run_checked(["git", "rev-parse", "HEAD"], project).stdout.strip()
+    manifest_digest = resolved["metadata"]["sourceHash"]
+    # Validate the whole plan before anything is claimed or committed.
+    build_backlog_plan(
+        batch,
+        run_id=run_id,
+        manifest_digest=manifest_digest,
+        base_commit=head,
+        validation_commands=validations,
+    )
+    base_commit = claim_stories(project, batch)
+    plan = build_backlog_plan(
+        batch,
+        run_id=run_id,
+        manifest_digest=manifest_digest,
+        base_commit=base_commit,
+        validation_commands=validations,
+    )
+    write_execution_plan(plan, state_dir / "execution-plan.yaml")
+    _append_audit(
+        project,
+        {
+            "event": "backlog.run.started",
+            "run_id": run_id,
+            "recorded_at": datetime.now(UTC).isoformat(),
+            "manifest_digest": manifest_digest,
+            "base_commit": base_commit,
+            "stories": [story.id for story in batch],
+        },
+    )
+    result = run_execution_pipeline(
+        project, plan, max_agents=max_agents, runtime_config=runtime_config
+    )
+    write_pipeline_run(result, state_dir / "result.json")
+    for assignment in result.assignments:
+        _append_audit(
+            project,
+            {
+                "event": "pipeline.assignment",
+                "run_id": result.run_id,
+                "recorded_at": datetime.now(UTC).isoformat(),
+                "manifest_digest": manifest_digest,
+                "adapter": runtime_config.adapter,
+                "provider": runtime_config.provider,
+                "model": runtime_config.model,
+                **asdict(assignment),
+            },
+        )
+    return result, batch
+
+
 @backlog_app.command("run")
 def backlog_run_command(
     validation: Annotated[
         list[str] | None,
-        typer.Option("--validation", help="Exact validation command; repeat as needed"),
+        typer.Option("--validation", help="Default validation command for stories without their own; repeat as needed"),
     ] = None,
     max_parallel: Annotated[
         int, typer.Option("--max-parallel", min=1, max=8, help="Stories claimed together")
     ] = 2,
     max_agents: Annotated[int, typer.Option("--max-agents", min=1, max=8)] = 3,
+    batches: Annotated[
+        int, typer.Option("--batches", min=1, max=20, help="Waves to run in sequence; needs --integrate when above 1")
+    ] = 1,
+    integrate: Annotated[
+        bool,
+        typer.Option(
+            "--integrate",
+            help="Integrate each completed wave without waiting for review; stops at the first failure",
+        ),
+    ] = False,
     run_id: Annotated[
         str | None, typer.Option("--run-id", help="Stable safe identifier; generated when omitted")
     ] = None,
     dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="Show the batch and plan without claiming anything")
+        bool, typer.Option("--dry-run", help="Show the first batch and plan without claiming anything")
     ] = False,
     project: _ProjectOption = Path("."),
 ) -> None:
     """Claim the next batch of ready stories and implement them with parallel agents.
 
     Claiming commits ``ready -> in_progress`` for the batch; that commit is the
-    plan's approved base. Review the result and run ``devplane integrate <run>``.
+    plan's approved base. Review the result and run ``devplane integrate <run>``,
+    or pass ``--integrate`` to integrate each wave automatically (required to chain
+    several waves with ``--batches``, since each wave builds on the previous one).
     """
     project = _project(project)
+    if batches > 1 and not integrate:
+        _fail(
+            DevPlaneError(
+                "--batches greater than 1 needs --integrate: each wave is based on "
+                "the integrated result of the previous one"
+            )
+        )
+    chained = integrate or batches > 1
     try:
         resolved = sync_project(project, check=True)
         _verify_contexts(project, resolved)
-        effective_run_id = run_id or f"backlog-{uuid.uuid4().hex[:12]}"
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", effective_run_id):
+        base_run_id = run_id or f"backlog-{uuid.uuid4().hex[:12]}"
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", base_run_id):
             raise DevPlaneError("run_id must be a safe identifier")
-        state_dir = project / ".git" / "devplane" / "runs" / effective_run_id
-        if state_dir.exists():
-            raise DevPlaneError(f"run already exists: {effective_run_id}")
-        runtime_config = None if dry_run else runtime_from_manifest(resolved)
-        backlog = load_backlog(project)
-        planned = plan_batches(backlog, max_parallel=max_parallel)
-        if not planned.batches:
-            notes = [f"{key}: {value}" for key, value in sorted(planned.deferred.items())]
-            notes += [f"{key} waits for {', '.join(value)}" for key, value in sorted(planned.waiting.items())]
-            raise DevPlaneError(
-                "no ready stories to run" + (f" ({'; '.join(notes)})" if notes else "")
-            )
-        batch = list(planned.batches[0])
         validations = validation or resolved["spec"].get("validations", [])
-        head = commands.run_checked(["git", "rev-parse", "HEAD"], project).stdout.strip()
-        # Validate the whole plan before anything is claimed or committed.
-        preview = build_backlog_plan(
-            batch,
-            run_id=effective_run_id,
-            manifest_digest=resolved["metadata"]["sourceHash"],
-            base_commit=head,
-            validation_commands=validations,
-        )
         if dry_run:
+            if (project / ".git" / "devplane" / "runs" / base_run_id).exists():
+                raise DevPlaneError(f"run already exists: {base_run_id}")
+            batch, planned = _select_batch(project, max_parallel)
+            head = commands.run_checked(["git", "rev-parse", "HEAD"], project).stdout.strip()
+            preview = build_backlog_plan(
+                batch,
+                run_id=base_run_id,
+                manifest_digest=resolved["metadata"]["sourceHash"],
+                base_commit=head,
+                validation_commands=validations,
+            )
             _emit(
                 {
-                    "run_id": effective_run_id,
+                    "run_id": base_run_id,
                     "dry_run": True,
                     "stories": [story.id for story in batch],
                     "deferred": planned.deferred,
@@ -1562,48 +1658,60 @@ def backlog_run_command(
                 }
             )
             return
-        assert runtime_config is not None
-        base_commit = claim_stories(project, batch)
-        plan = build_backlog_plan(
-            batch,
-            run_id=effective_run_id,
-            manifest_digest=resolved["metadata"]["sourceHash"],
-            base_commit=base_commit,
-            validation_commands=validations,
-        )
-        plan_path = state_dir / "execution-plan.yaml"
-        write_execution_plan(plan, plan_path)
-        _append_audit(
-            project,
-            {
-                "event": "backlog.run.started",
-                "run_id": effective_run_id,
-                "recorded_at": datetime.now(UTC).isoformat(),
-                "manifest_digest": resolved["metadata"]["sourceHash"],
-                "base_commit": base_commit,
+        runtime_config = runtime_from_manifest(resolved)
+        waves: list[dict[str, object]] = []
+        failed = False
+        stopped = "batch limit reached"
+        result = None
+        batch = []
+        for index in range(1, batches + 1):
+            wave_id = base_run_id if batches == 1 else f"{base_run_id}-{index}"
+            try:
+                result, batch = _run_backlog_wave(
+                    project,
+                    resolved,
+                    run_id=wave_id,
+                    validations=validations,
+                    max_parallel=max_parallel,
+                    max_agents=max_agents,
+                    runtime_config=runtime_config,
+                )
+            except NoReadyStories:
+                if not waves:
+                    raise
+                stopped = "no ready stories"
+                break
+            wave: dict[str, object] = {
+                "run_id": wave_id,
+                "status": result.status,
                 "stories": [story.id for story in batch],
-            },
-        )
-        result = run_execution_pipeline(
-            project, plan, max_agents=max_agents, runtime_config=runtime_config
-        )
-        write_pipeline_run(result, state_dir / "result.json")
-        for assignment in result.assignments:
-            _append_audit(
-                project,
-                {
-                    "event": "pipeline.assignment",
-                    "run_id": result.run_id,
-                    "recorded_at": datetime.now(UTC).isoformat(),
-                    "manifest_digest": resolved["metadata"]["sourceHash"],
-                    "adapter": runtime_config.adapter,
-                    "provider": runtime_config.provider,
-                    "model": runtime_config.model,
-                    **asdict(assignment),
-                },
-            )
+            }
+            waves.append(wave)
+            if result.status != "completed":
+                failed = True
+                break
+            if integrate:
+                try:
+                    integrated = _integrate_run(project, wave_id)
+                except DevPlaneError as exc:
+                    wave["integration_error"] = str(exc)
+                    failed = True
+                    break
+                wave["integrated"] = integrated
+                if "backlog_error" in integrated:
+                    failed = True
+                    break
     except (DevPlaneError, OSError) as exc:
         _fail(exc if isinstance(exc, DevPlaneError) else DevPlaneError(f"cannot run backlog: {exc}"))
-    _emit({**asdict(result), "stories": [story.id for story in batch]})
-    if result.status != "completed":
+    if not chained:
+        assert result is not None
+        _emit({**asdict(result), "stories": [story.id for story in batch]})
+        if result.status != "completed":
+            raise typer.Exit(1)
+        return
+    outcome: dict[str, object] = {"status": "failed" if failed else "completed", "waves": waves}
+    if not failed:
+        outcome["stopped_because"] = stopped
+    _emit(outcome)
+    if failed:
         raise typer.Exit(1)

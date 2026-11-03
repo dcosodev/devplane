@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 
 from devplane.backlog import load_backlog
 from devplane.cli import app
+from devplane.core import DevPlaneError
 
 runner = CliRunner()
 
@@ -297,3 +298,159 @@ def test_plan_execution_names_the_files_that_make_the_project_dirty(project: Pat
 
     assert result.exit_code == 1
     assert "creating an execution plan: ?? tasks.md" in result.output
+
+
+# ---------------------------------------------------------------------------
+# chaining waves
+# ---------------------------------------------------------------------------
+
+
+def _make_independent(project: Path) -> None:
+    path = project / "backlog" / "US-003.md"
+    path.write_text(path.read_text().replace("src/auth.py", "lib/util.py"))
+    _git(project, "add", "-A")
+    _git(project, "commit", "-m", "docs: make US-003 independent")
+
+
+def _chain(project: Path, *args: str):
+    return _run(project, "--integrate", *args)
+
+
+def _subjects(project: Path) -> list[str]:
+    return _git(project, "log", "--format=%s").splitlines()
+
+
+def test_chaining_waves_requires_integrate_and_claims_nothing(project: Path) -> None:
+    head = _git(project, "rev-parse", "HEAD")
+
+    result = _run(project, "--batches", "2")
+
+    assert result.exit_code == 1
+    assert "--integrate" in result.output
+    assert _git(project, "rev-parse", "HEAD") == head
+    assert _statuses(project) == {"US-001": "ready", "US-002": "ready", "US-003": "ready"}
+
+
+def test_waves_are_chained_until_the_ready_stories_run_out(project: Path) -> None:
+    _make_independent(project)
+
+    result = _chain(project, "--max-parallel", "1", "--batches", "5", "--run-id", "chain")
+
+    assert result.exit_code == 0, result.output
+    outcome = json.loads(result.output)
+    assert outcome["status"] == "completed"
+    assert outcome["stopped_because"] == "no ready stories"
+    assert [wave["run_id"] for wave in outcome["waves"]] == ["chain-1", "chain-2", "chain-3"]
+    assert [wave["stories"] for wave in outcome["waves"]] == [["US-001"], ["US-002"], ["US-003"]]
+    assert all(wave["status"] == "completed" and wave["integrated"] for wave in outcome["waves"])
+    assert _statuses(project) == {"US-001": "review", "US-002": "review", "US-003": "review"}
+    subjects = _subjects(project)
+    assert sum(item.startswith("chore(backlog): start") for item in subjects) == 3
+    assert sum(item.startswith("chore(backlog): ready for review") for item in subjects) == 3
+    assert {"src/auth.py", "docs/guide.md", "lib/util.py"}.issubset(
+        _git(project, "ls-tree", "-r", "--name-only", "HEAD").split()
+    )
+    assert _git(project, "status", "--porcelain") == ""
+
+
+def test_the_batch_limit_stops_the_chain(project: Path) -> None:
+    _make_independent(project)
+
+    result = _chain(project, "--max-parallel", "1", "--batches", "2")
+
+    assert result.exit_code == 0, result.output
+    outcome = json.loads(result.output)
+    assert outcome["stopped_because"] == "batch limit reached"
+    assert len(outcome["waves"]) == 2
+    assert _statuses(project) == {"US-001": "review", "US-002": "review", "US-003": "ready"}
+
+
+def test_overlapping_stories_wait_until_the_earlier_one_is_done(project: Path) -> None:
+    result = _chain(project, "--batches", "3")
+
+    assert result.exit_code == 0, result.output
+    outcome = json.loads(result.output)
+    assert len(outcome["waves"]) == 1
+    assert outcome["waves"][0]["stories"] == ["US-001", "US-002"]
+    assert _statuses(project) == {"US-001": "review", "US-002": "review", "US-003": "ready"}
+
+
+def test_integrate_alone_integrates_a_single_wave(project: Path) -> None:
+    result = _chain(project, "--max-parallel", "1", "--run-id", "single")
+
+    assert result.exit_code == 0, result.output
+    outcome = json.loads(result.output)
+    assert [wave["run_id"] for wave in outcome["waves"]] == ["single"]
+    assert _statuses(project)["US-001"] == "review"
+    assert _git(project, "log", "-1", "--format=%s") == "chore(backlog): ready for review US-001"
+
+
+def test_the_chain_stops_at_the_first_failed_wave(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _make_independent(project)
+    monkeypatch.setenv("DEVPLANE_FAKE_AGENT", "skip")
+
+    result = _chain(project, "--max-parallel", "1", "--batches", "3", "--run-id", "stop")
+
+    assert result.exit_code == 1
+    outcome = json.loads(result.output)
+    assert outcome["status"] == "failed"
+    assert [wave["status"] for wave in outcome["waves"]] == ["failed"]
+    assert "integrated" not in outcome["waves"][0]
+    assert _statuses(project) == {"US-001": "in_progress", "US-002": "ready", "US-003": "ready"}
+
+
+def test_a_chain_with_nothing_ready_fails_instead_of_succeeding_quietly(project: Path) -> None:
+    for story_id in ("US-001", "US-002", "US-003"):
+        path = project / "backlog" / f"{story_id}.md"
+        path.write_text(path.read_text().replace("status: ready", "status: blocked"))
+    _git(project, "add", "-A")
+    _git(project, "commit", "-m", "docs: block everything")
+
+    result = _chain(project, "--batches", "3")
+
+    assert result.exit_code == 1
+    assert "no ready stories" in result.output
+
+
+def test_a_failed_wave_is_not_integrated_or_followed_by_another(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _make_independent(project)
+    monkeypatch.setenv("DEVPLANE_FAKE_AGENT", "skip")
+
+    result = _chain(project, "--max-parallel", "1", "--batches", "3", "--run-id", "strict")
+
+    outcome = json.loads(result.output)
+    assert [set(wave) for wave in outcome["waves"]] == [{"run_id", "status", "stories"}]
+
+
+@pytest.mark.parametrize(
+    ("integration", "expected_key"),
+    [
+        (DevPlaneError("project must be clean before integration: ?? stray.txt"), "integration_error"),
+        ({"run_id": "x", "status": "integrated", "backlog_error": "could not update"}, "integrated"),
+    ],
+    ids=["integration-error", "backlog-update-error"],
+)
+def test_the_chain_stops_when_a_wave_cannot_be_integrated(
+    project: Path, monkeypatch: pytest.MonkeyPatch, integration: object, expected_key: str
+) -> None:
+    _make_independent(project)
+
+    def fake_integrate(_project: Path, _run_id: str):
+        if isinstance(integration, Exception):
+            raise integration
+        return integration
+
+    monkeypatch.setattr("devplane.cli._integrate_run", fake_integrate)
+
+    result = _chain(project, "--max-parallel", "1", "--batches", "3", "--run-id", "halt")
+
+    assert result.exit_code == 1
+    outcome = json.loads(result.output)
+    assert outcome["status"] == "failed"
+    assert len(outcome["waves"]) == 1
+    assert expected_key in outcome["waves"][0]
+    assert _statuses(project) == {"US-001": "in_progress", "US-002": "ready", "US-003": "ready"}
