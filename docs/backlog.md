@@ -63,7 +63,7 @@ All commands accept `--project <root>` and print JSON.
 | `devplane backlog next` | Ready stories whose dependencies are done, highest priority first |
 | `devplane backlog plan [--max-parallel N]` | Group ready stories into parallel batches |
 | `devplane backlog status <id> <new>` | Apply an allowed status change |
-| `devplane backlog run [--max-parallel N] [--max-agents N] [--validation CMD] [--dry-run]` | Claim the next batch and implement it with parallel agents |
+| `devplane backlog run [--max-parallel N] [--max-agents N] [--validation CMD] [--batches N --integrate] [--dry-run]` | Claim the next batch and implement it with parallel agents; optionally chain several waves |
 
 `status` rewrites only the frontmatter `status:` line and refuses any change that would leave the story invalid, for example moving a story without a `write_scope` to `ready`.
 
@@ -101,7 +101,17 @@ If a run fails, the stories stay `in_progress` and `devplane retry <run-id>` reu
 
 Validation is per story: a story's own `validation` commands are used if it has any, otherwise the `--validation` commands or the catalog's. Stories in one batch are often unrelated, so a single command that fits all of them (for example a test suite that only some of them create) usually does not exist; give each story the command that proves it. A run with no validation for some story is refused before anything is claimed. Editing a story's `validation` after planning counts as drift.
 
-Limits: one batch per invocation; the backlog is not updated until `integrate`, so a failed run is never marked as finished; see [Audit trail](#audit-trail).
+### Chaining waves
+
+By default `run` handles one batch and leaves integration to you. `--batches N --integrate` runs up to N waves in sequence: each wave is claimed, implemented, integrated (the same gate as `devplane integrate`, validation included) and recorded as `review` before the next one is planned, so every wave builds on the integrated result of the previous one. That is why `--batches` above 1 requires `--integrate`.
+
+```bash
+devplane backlog run --max-parallel 2 --batches 5 --integrate --run-id sprint
+```
+
+Wave run ids are `<run-id>-1`, `<run-id>-2`, and so on. The chain stops at the first failure (a failed wave, a failed integration, or a failed backlog update), when no story is ready, or at the batch limit; the JSON output lists every wave and the reason it stopped. `--integrate` skips the manual review between waves, so use it for work whose validation you trust. Stories that overlap one that is only in `review` wait until it is `done`, and stories whose dependencies are not `done` wait too, so a chain usually covers independent stories.
+
+Limits: one batch per invocation unless chained; the backlog is not updated until `integrate`, so a failed run is never marked as finished; see [Audit trail](#audit-trail).
 
 ## Audit trail
 

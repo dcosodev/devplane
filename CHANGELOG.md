@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
+- `devplane backlog run --batches N --integrate`: runs up to N waves in sequence, integrating each completed wave before planning the next, and stops at the first failed wave or integration, when no story is ready, or at the limit. Chaining requires `--integrate` because each wave builds on the integrated result of the previous one. `devplane integrate` and `backlog run` now share the same integration code.
 - Audit events for the backlog: `backlog.status.changed` when `devplane backlog status` moves a story and `backlog.review.recorded` when `integrate` moves integrated stories to `review`, alongside the existing `backlog.run.started`.
 - Bounded write-scope grammar (`devplane.scopes`): literal segments, `*` and `?` within a segment, and `**` only as the final segment, with exact membership and overlap decisions.
 - `devplane guard --policy <file>`: a Claude Code `PreToolUse` hook that blocks `Edit`, `Write`, `MultiEdit` and `NotebookEdit` calls outside an assignment's write scopes, outside its worktree (including through symlinks), or into governed roots. Every failure path exits with 2, the only code Claude Code treats as a block.
