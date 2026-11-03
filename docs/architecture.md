@@ -165,6 +165,8 @@ Git worktrees isolate Git branches and files, not the host. Runtime permission s
 
 Declarative shell and write patterns are policy inputs and generated context. Authoritative write-scope checks occur after execution; they cannot undo external side effects. Use containers or stronger platform sandboxing when pre-execution isolation is required; DevPlane does not provide or manage a sandbox. Optional runtime hooks, such as the Claude Code write guard, only fail fast on out-of-scope file writes and never replace the post-run check.
 
+Validation commands run inside DevPlane-owned worktrees. Afterwards DevPlane removes untracked, non-ignored files from them (caches and build output belong to no commit and would block the clean-worktree gate), but never tracked files and never anything outside a worktree root; add generated paths to `.gitignore` to keep them out of status entirely.
+
 Treat catalog YAML, Markdown, project repositories, task descriptions, agent executables, and validation commands as trusted code/configuration. Review third-party catalogs before synchronization.
 
 ## Compatibility and extension rules

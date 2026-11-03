@@ -8,7 +8,7 @@ import re
 import shlex
 import subprocess
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 
@@ -220,6 +220,26 @@ def _safe_changed_path(value: str) -> str:
 
 def _is_allowed(path: str, scopes: tuple[str, ...]) -> bool:
     return any(path_in_scope(path, scope) for scope in scopes)
+
+
+def _run_validation(
+    commands: Iterable[str], worktree: Path, run_command: CommandRunner
+) -> None:
+    """Run validation commands, then drop the untracked files they left behind.
+
+    ``worktree`` is a DevPlane-owned worktree that matched a commit before the
+    commands ran, so untracked files in it can only be validation by-products
+    (caches, build output). They belong to no commit and would otherwise trip the
+    clean-worktree gate before integration. Ignored files and changes to tracked
+    files are left alone, so a command that edits tracked files is still caught by
+    that gate.
+    """
+    for command in commands:
+        run_command(_command_argv(command), worktree)
+    top = run_command(["git", "rev-parse", "--show-toplevel"], worktree).stdout.strip()
+    if not top or Path(top).resolve() != worktree.resolve():
+        raise DevPlaneError(f"refusing to clean a directory that is not a worktree root: {worktree}")
+    run_command(["git", "clean", "-fdq"], worktree)
 
 
 def _assignment_batches(assignments: tuple[ExecutionAssignment, ...]) -> list[list[ExecutionAssignment]]:
@@ -455,8 +475,7 @@ def run_execution_pipeline(
             if error is None:
                 try:
                     run_command(["git", "diff", "--check", f"{current_base}..{head}"], handle.path)
-                    for command in assignment.validation:
-                        run_command(_command_argv(command), handle.path)
+                    _run_validation(assignment.validation, handle.path, run_command)
                 except DevPlaneError as exc:
                     error = str(exc)
             if error is not None:
@@ -513,8 +532,7 @@ def run_execution_pipeline(
                 if item.commit is None:
                     raise DevPlaneError("parallel assignment has no commit")
                 run_command(["git", "cherry-pick", item.commit], integration.path)
-                for command in assignment.validation:
-                    run_command(_command_argv(command), integration.path)
+                _run_validation(assignment.validation, integration.path, run_command)
             merged = run_command(["git", "rev-parse", "HEAD"], integration.path).stdout.strip()
             if not _SAFE_COMMIT.fullmatch(merged):
                 raise DevPlaneError("integration branch has an invalid commit")
@@ -589,12 +607,9 @@ def integrate_pipeline(
         raise DevPlaneError("pipeline final worktree commit drift detected")
     if run_command(["git", "status", "--porcelain"], validation_worktree).stdout:
         raise DevPlaneError("pipeline final worktree must be clean before integration")
-    seen_commands: set[str] = set()
-    for assignment in plan.assignments:
-        for command in assignment.validation:
-            if command in seen_commands:
-                continue
-            run_command(_command_argv(command), validation_worktree)
-            seen_commands.add(command)
+    unique_commands = dict.fromkeys(
+        command for assignment in plan.assignments for command in assignment.validation
+    )
+    _run_validation(unique_commands, validation_worktree, run_command)
     run_command(["git", "merge", "--ff-only", result.final_commit], project)
     return result.final_commit
