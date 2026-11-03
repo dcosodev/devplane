@@ -55,6 +55,17 @@ options:
 
 Host and managed Claude Code policies remain authoritative. A denied or unavailable tool causes the assignment to fail rather than weakening permissions.
 
+### Commit attribution
+
+Claude Code appends a `Co-Authored-By` trailer to the commits it makes. An assignment's commit is fast-forwarded into the project by `devplane integrate`, so the adapter passes `--settings '{"attribution":{"commit":"","pr":""}}'` and the trailer is not added. Set `commitAttribution: true` to keep Claude Code's own attribution:
+
+```yaml
+options:
+  commitAttribution: true
+```
+
+This only affects sessions launched by DevPlane. Other adapters cannot be configured this way, so for them the assignment contract only asks the agent not to add attribution lines; that is an instruction, not something DevPlane enforces.
+
 ### Write guard
 
 The write guard is a fail-fast aid, not a security boundary. Its purpose is to stop an out-of-scope file write at the first attempt, so an assignment does not spend a full run and a rejected commit to learn the same thing. The post-run allowed-path check is what enforces scopes for every adapter, whether or not a pre-execution hook exists. Isolating the host from the agent remains the user's and the runtime's responsibility.
@@ -116,7 +127,7 @@ Every supported runtime receives the same assignment contract:
 - approved tasks and source digests;
 - allowed paths;
 - exact validations;
-- one focused local commit;
+- one focused local commit, without `Co-Authored-By` or other tool attribution lines;
 - no push, deployment, account action, or destructive Git operation.
 
 After the CLI exits, DevPlane independently checks the commit, dirty state, changed paths, governed paths, whitespace, and validations. Agent output is evidence, not authority.

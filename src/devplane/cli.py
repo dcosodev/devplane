@@ -1262,6 +1262,8 @@ def retry(
         },
     )
     typer.echo(json.dumps(asdict(retried), indent=2, sort_keys=True))
+    if retried.status != "completed":
+        raise typer.Exit(1)
 
 
 @app.command()

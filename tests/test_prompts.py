@@ -111,6 +111,7 @@ def test_phase_prompt_keeps_every_contract_rule() -> None:
     _assert_contains_all(rules[4], "Do not push", "deploy", "account", "destructive Git")
     _assert_contains_all(rules[5], "native validation")
     _assert_contains_all(rules[6], "focused local commit", "before finishing")
+    _assert_contains_all(rules[6], "Co-Authored-By", "attribution")
     _assert_contains_all(rules[7], "SHA", "files", "commands", "exact results", "risks")
 
 
@@ -140,6 +141,7 @@ def test_assignment_prompt_keeps_every_contract_rule(
     _assert_contains_all(rules[3], "Do not modify", ".agents/", ".claude/", ".opencode/", ".devplane/", ".git/", ".hermes/", ".specify/", "specs/")
     _assert_contains_all(rules[4], "Do not push", "deploy", "account", "destructive Git")
     _assert_contains_all(rules[5], "single focused local commit", "worktree clean")
+    _assert_contains_all(rules[5], "Co-Authored-By", "attribution")
     next_rule = 6
     if allows_empty_commit:
         _assert_contains_all(

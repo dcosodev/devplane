@@ -12,14 +12,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - `devplane guard --policy <file>`: a Claude Code `PreToolUse` hook that blocks `Edit`, `Write`, `MultiEdit` and `NotebookEdit` calls outside an assignment's write scopes, outside its worktree (including through symlinks), or into governed roots. Every failure path exits with 2, the only code Claude Code treats as a block.
 - `python -m devplane` entry point.
 - Claude Code runtime option `writeGuard: true`: registers `devplane guard` as a per-assignment `PreToolUse` hook through `--settings`. The execution pipeline writes a per-assignment policy outside the worktree and fails the assignment, rather than running unguarded, if it cannot. Off by default; other adapters reject the option.
-
 - `devplane backlog` (`check`, `list`, `show`, `next`, `plan`, `status`): a repository-scoped story backlog stored as Markdown files in `backlog/`, with dependency and cycle validation, a fixed status transition table and a planner that groups ready stories into parallel batches with pairwise disjoint write scopes. See `docs/backlog.md`.
 - `devplane backlog run`: claims the next batch of ready stories in a `chore(backlog): start …` commit that becomes the approved base, then implements it with parallel agents through the existing worktree pipeline (story id = assignment id, `write_scope` = allowed paths). `implement --execution-plan`, `retry` and `integrate` understand backlog plans; `integrate` records integrated stories as `review`. `validate_execution_plan` is now a reusable function.
 
 ### Changed
 
+- Assignment prompts now ask agents not to add `Co-Authored-By` or other tool attribution lines to their commit messages. The Claude Code adapter also turns off Claude Code's own commit and pull-request attribution for DevPlane sessions (`--settings`), because those commits are fast-forwarded into the project. Set the Claude runtime option `commitAttribution: true` to keep it.
 - Parallel-batch overlap detection now uses exact scope overlap instead of a prefix approximation. Disjoint patterns such as `src/*.py` and `src/*.txt` are no longer reported as overlapping.
 - Execution plans express a trailing `dir/*` write scope as `dir/**`, preserving its reach over nested files.
+
+### Fixed
+
+- `devplane retry` now exits with status 1 when the retried run is not `completed`, like `implement`; it used to exit 0 for a failed run.
 
 ### Security
 
