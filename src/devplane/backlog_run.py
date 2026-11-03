@@ -19,12 +19,12 @@ from __future__ import annotations
 
 import hashlib
 import textwrap
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import yaml
 
-from .backlog import BACKLOG_DIRECTORY, Story, load_backlog, set_status
+from .backlog import BACKLOG_DIRECTORY, Story, load_backlog, set_feature, set_status
 from .commands import describe_dirty, run_checked
 from .core import DevPlaneError
 from .execution_plan import (
@@ -130,15 +130,18 @@ def _require_clean(project: Path, action: str) -> None:
         raise DevPlaneError(f"project must be clean before {action}{describe_dirty(status)}")
 
 
-def _commit_status(project: Path, stories: Sequence[Story], status: str, message: str) -> None:
-    """Move stories to ``status`` and commit; restore everything if that fails."""
+def _commit_edit(
+    project: Path, stories: Sequence[Story], edit: Callable[[Story], object], message: str
+) -> None:
+    """Apply ``edit`` to each story and commit only those files; restore everything on failure."""
     paths = [f"{BACKLOG_DIRECTORY}/{story.path.name}" for story in stories]
     originals = {story.path: story.path.read_text(encoding="utf-8") for story in stories}
     try:
         for story in stories:
-            set_status(project, story.id, status)
+            edit(story)
         run_checked(["git", "add", "--", *paths], project)
-        run_checked(["git", "commit", "-m", message], project)
+        # A pathspec keeps anything else the user has staged out of this commit.
+        run_checked(["git", "commit", "-m", message, "--", *paths], project)
     except BaseException:
         for path, text in originals.items():
             path.write_text(text, encoding="utf-8")
@@ -147,6 +150,11 @@ def _commit_status(project: Path, stories: Sequence[Story], status: str, message
         except DevPlaneError:
             pass
         raise
+
+
+def _commit_status(project: Path, stories: Sequence[Story], status: str, message: str) -> None:
+    """Move stories to ``status`` and commit; restore everything if that fails."""
+    _commit_edit(project, stories, lambda story: set_status(project, story.id, status), message)
 
 
 def _head(project: Path) -> str:
@@ -180,3 +188,45 @@ def mark_ready_for_review(project: Path, plan: ExecutionPlan) -> list[str]:
     ids = ", ".join(story.id for story in pending)
     _commit_status(project, pending, "review", f"chore(backlog): ready for review {ids}")
     return [story.id for story in pending]
+
+
+def link_story_to_feature(project: Path, story_id: str, feature: str) -> None:
+    """Record, in a commit of its own, that a story is being specified as ``feature``."""
+    project = project.expanduser().resolve()
+    story = load_backlog(project).get(story_id)
+    if story.feature == feature:
+        return
+    if story.feature:
+        raise DevPlaneError(f"{story_id} is already linked to feature {story.feature}")
+    _commit_edit(
+        project,
+        [story],
+        lambda item: set_feature(project, item.id, feature),
+        f"chore(backlog): link {story_id} to feature {feature}",
+    )
+
+
+def mark_feature_stories_review(project: Path, feature: str) -> list[str]:
+    """After a feature run is integrated, move the stories linked to it to ``review``.
+
+    Only ``ready`` and ``in_progress`` stories move (a ``ready`` one passes through
+    ``in_progress``, since the feature was implemented); anything else is left alone.
+    """
+    project = project.expanduser().resolve()
+    linked = [
+        story
+        for story in load_backlog(project).stories
+        if story.feature == feature and story.status in ("ready", "in_progress")
+    ]
+    if not linked:
+        return []
+    _require_clean(project, "recording the integrated stories")
+
+    def edit(story: Story) -> None:
+        if story.status == "ready":
+            set_status(project, story.id, "in_progress")
+        set_status(project, story.id, "review")
+
+    ids = ", ".join(story.id for story in linked)
+    _commit_edit(project, linked, edit, f"chore(backlog): ready for review {ids} (feature {feature})")
+    return [story.id for story in linked]

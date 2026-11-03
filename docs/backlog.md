@@ -33,7 +33,7 @@ Free-form Markdown: description and acceptance criteria.
 | `depends_on` | Ids of other stories; unknown ids, self-dependencies and cycles are rejected |
 | `write_scope` | Scopes in the [bounded glob grammar](#write-scope-grammar); required for `ready`, `in_progress`, `review` and `done` |
 | `validation` | Optional list of exact commands that validate this story. They replace the run's default validation for this story only. Each is one line, runs without a shell, and shell operators such as `&&`, `\|` and `;` are rejected |
-| `feature` | Optional identifier of the Spec Kit feature the story belongs to |
+| `feature` | Optional DevPlane feature run id the story is linked to; `backlog specify` sets it |
 
 Unknown keys, symlinked files or directories, files over 256 KiB, duplicate ids and scopes that target a governed root (`.agents`, `.claude`, `.devplane`, `.git`, `.hermes`, `.opencode`, `.specify`, `specs`) are rejected.
 
@@ -62,6 +62,22 @@ READY (3)
 next batch: US-001, US-002
 ```
 
+## From a story to a Spec Kit feature
+
+A story can be run directly (`backlog run`) or specified first. `devplane backlog specify US-001` takes the story's title and body as the feature description, runs the Spec Kit `specify` phase through the same governed flow as `devplane run --stop-after tasks`, and stops at the spec approval gate. The run id is `spec-<story id>` unless you pass `--run-id`.
+
+```bash
+devplane backlog specify US-001          # specify, then stop for approval
+devplane approve spec-US-001 spec        # review spec.md, then approve; same for plan and tasks
+devplane checkpoint spec-US-001 --tasks-file specs/001-…/tasks.md --validation "uv run pytest"
+devplane implement --parallel --execution-plan .git/devplane/runs/spec-US-001/execution-plan.yaml
+devplane integrate spec-US-001
+```
+
+DevPlane records the link in its own commit, `chore(backlog): link US-001 to feature spec-US-001`, which contains only the story file (anything else you have staged stays out of it). If the `specify` phase fails, nothing is linked. A story that already has a `feature` is refused. `backlog show` and `backlog board` display the linked run's status, for example `[feature spec-US-001: spec_pending_approval]`.
+
+When a linked feature is integrated, its `ready` and `in_progress` stories move to `review` in a follow-up commit (`chore(backlog): ready for review US-001 (feature spec-US-001)`); a story still in `backlog` is left alone. The story's own `write_scope` and `validation` are not used on this path: the scopes come from the approved `tasks.md`.
+
 ## Statuses
 
 ```text
@@ -83,6 +99,7 @@ All commands accept `--project <root>` and print JSON.
 | `devplane backlog show <id>` | Show one story with its body |
 | `devplane backlog create --title T [options]` | Create a validated story file (not committed); the id is generated unless `--id` is given |
 | `devplane backlog board [--format text\|markdown\|json]` | Show the backlog as columns, with what the planner would do with each ready story |
+| `devplane backlog specify <id> [--run-id R]` | Start the governed Spec Kit flow for a story and link the story to it |
 | `devplane backlog next` | Ready stories whose dependencies are done, highest priority first |
 | `devplane backlog plan [--max-parallel N]` | Group ready stories into parallel batches |
 | `devplane backlog status <id> <new>` | Apply an allowed status change |
@@ -144,6 +161,7 @@ The story files and the `chore(backlog): …` commits are the history of what ea
 | --- | --- | --- |
 | `backlog.run.started` | `backlog run` claimed a batch | `run_id`, `base_commit`, `stories`, `manifest_digest` |
 | `pipeline.assignment` | each assignment of a run finished | the existing pipeline fields |
+| `backlog.story.specified` | `backlog specify` started a feature run | `story`, `feature` |
 | `backlog.story.created` | `backlog create` wrote a story | `story`, `path`, `status` |
 | `backlog.status.changed` | `backlog status` moved a story | `story`, `from`, `to` |
 | `backlog.review.recorded` | `integrate` moved integrated stories to `review` | `run_id`, `stories`, `final_commit` |

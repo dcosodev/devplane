@@ -38,6 +38,8 @@ from .backlog_run import (
     NoReadyStories,
     build_backlog_plan,
     claim_stories,
+    link_story_to_feature,
+    mark_feature_stories_review,
     mark_ready_for_review,
     verify_backlog_source,
 )
@@ -704,6 +706,47 @@ def context_command(
         _fail(exc)
 
 
+def _start_feature_run(project: Path, resolved: dict, spec: str, run_id: str | None) -> FeatureState:
+    """Run the Spec Kit ``specify`` phase for a new governed feature run and record its state."""
+    effective_run_id = run_id or f"feature-{uuid.uuid4().hex[:12]}"
+    state_path = project / ".git" / "devplane" / "runs" / effective_run_id / "feature-state.json"
+    if state_path.exists():
+        raise DevPlaneError(f"feature run already exists: {effective_run_id}")
+    spec_digest = f"sha256:{hashlib.sha256(spec.encode('utf-8')).hexdigest()}"
+    settings = _phase_settings(project, resolved)
+    write_feature_request(project, effective_run_id, spec)
+    phase_result = execute_phase(
+        project,
+        effective_run_id,
+        "specify",
+        spec,
+        settings=settings,
+        command_runner=commands.run_checked,
+    )
+    state = FeatureState(
+        run_id=effective_run_id,
+        status="spec_pending_approval",
+        manifest_digest=resolved["metadata"]["sourceHash"],
+        spec_digest=spec_digest,
+        external_runs={"specify": str(phase_result["run_id"])},
+    )
+    write_feature_state(project, state)
+    _append_audit(
+        project,
+        {
+            "event": "sdd.phase.completed",
+            "phase": "specify",
+            "integration": settings.integration,
+            "run_id": effective_run_id,
+            "external_run_id": phase_result["run_id"],
+            "recorded_at": datetime.now(UTC).isoformat(),
+            "manifest_digest": state.manifest_digest,
+            "spec_digest": state.spec_digest,
+        },
+    )
+    return state
+
+
 @app.command()
 def run(
     spec: Annotated[str, typer.Argument(help="Feature description passed to the Spec Kit workflow")],
@@ -719,42 +762,7 @@ def run(
         if stop_after is not None:
             if stop_after != "tasks":
                 raise DevPlaneError("--stop-after currently supports only 'tasks'")
-            effective_run_id = run_id or f"feature-{uuid.uuid4().hex[:12]}"
-            state_path = project / ".git" / "devplane" / "runs" / effective_run_id / "feature-state.json"
-            if state_path.exists():
-                raise DevPlaneError(f"feature run already exists: {effective_run_id}")
-            spec_digest = f"sha256:{hashlib.sha256(spec.encode('utf-8')).hexdigest()}"
-            settings = _phase_settings(project, resolved)
-            write_feature_request(project, effective_run_id, spec)
-            phase_result = execute_phase(
-                project,
-                effective_run_id,
-                "specify",
-                spec,
-                settings=settings,
-                command_runner=commands.run_checked,
-            )
-            state = FeatureState(
-                run_id=effective_run_id,
-                status="spec_pending_approval",
-                manifest_digest=resolved["metadata"]["sourceHash"],
-                spec_digest=spec_digest,
-                external_runs={"specify": str(phase_result["run_id"])},
-            )
-            write_feature_state(project, state)
-            _append_audit(
-                project,
-                {
-                    "event": "sdd.phase.completed",
-                    "phase": "specify",
-                    "integration": settings.integration,
-                    "run_id": effective_run_id,
-                    "external_run_id": phase_result["run_id"],
-                    "recorded_at": datetime.now(UTC).isoformat(),
-                    "manifest_digest": state.manifest_digest,
-                    "spec_digest": state.spec_digest,
-                },
-            )
+            state = _start_feature_run(project, resolved, spec, run_id)
             typer.echo(json.dumps(state.to_mapping(), indent=2, sort_keys=True))
             return
         integration = _read_integration_state(project)["default_integration"]
@@ -1178,11 +1186,14 @@ def _integrate_run(project: Path, run_id: str) -> dict[str, object]:
     _update_feature_status(project, run_id, "integrated")
     backlog_review: list[str] | None = None
     backlog_error: str | None = None
-    if plan.source_tasks == BACKLOG_SOURCE:
-        try:
+    try:
+        if plan.source_tasks == BACKLOG_SOURCE:
             backlog_review = mark_ready_for_review(project, plan)
-        except DevPlaneError as exc:
-            backlog_error = str(exc)
+        else:
+            # A Spec Kit feature run may be linked to backlog stories (backlog specify).
+            backlog_review = mark_feature_stories_review(project, run_id) or None
+    except DevPlaneError as exc:
+        backlog_error = str(exc)
     _append_audit(
         project,
         {
@@ -1488,11 +1499,18 @@ def backlog_list(
 @backlog_app.command("show")
 def backlog_show(story_id: str, project: _ProjectOption = Path(".")) -> None:
     """Show one story, including its Markdown body."""
+    root = _project(project)
     try:
-        story = load_backlog(_project(project)).get(story_id)
+        story = load_backlog(root).get(story_id)
     except DevPlaneError as exc:
         _fail(exc)
-    _emit({**_story_summary(story), "body": story.body})
+    _emit(
+        {
+            **_story_summary(story),
+            "feature_status": _feature_status(root, story.feature),
+            "body": story.body,
+        }
+    )
 
 
 @backlog_app.command("next")
@@ -1546,6 +1564,70 @@ def backlog_status(
         },
     )
     _emit({"id": story.id, "status": story.status})
+
+
+def _feature_status(project: Path, feature: str | None) -> str | None:
+    """Status of the DevPlane feature run a story is linked to, if its state is readable."""
+    if not feature:
+        return None
+    try:
+        return load_feature_state(project, feature).status
+    except DevPlaneError:
+        return None
+
+
+@backlog_app.command("specify")
+def backlog_specify(
+    story_id: str,
+    run_id: Annotated[
+        str | None, typer.Option("--run-id", help="Feature run id; defaults to spec-<story id>")
+    ] = None,
+    project: _ProjectOption = Path("."),
+) -> None:
+    """Start the governed Spec Kit flow for a story and link the story to it.
+
+    The story's title and body are the feature description. This runs the ``specify``
+    phase and stops at the spec approval gate; continue with ``devplane approve``,
+    ``checkpoint``, ``implement`` and ``integrate``. Integrating the feature moves the
+    linked story to ``review``.
+    """
+    root = _project(project)
+    try:
+        resolved = sync_project(root, check=True)
+        _verify_contexts(root, resolved)
+        story = load_backlog(root).get(story_id)
+        if story.feature:
+            raise DevPlaneError(f"{story.id} is already linked to feature {story.feature}")
+        feature_id = run_id or f"spec-{story.id}"
+        body = story.body.strip()
+        description = f"{story.title}\n\n{body}" if body else story.title
+        state = _start_feature_run(root, resolved, description, feature_id)
+        try:
+            link_story_to_feature(root, story.id, feature_id)
+        except DevPlaneError as exc:
+            raise DevPlaneError(
+                f"feature run {feature_id} was started but {story.id} could not be linked: {exc}; "
+                f"add `feature: {feature_id}` to the story's frontmatter by hand"
+            ) from exc
+    except DevPlaneError as exc:
+        _fail(exc)
+    _append_audit(
+        root,
+        {
+            "event": "backlog.story.specified",
+            "recorded_at": datetime.now(UTC).isoformat(),
+            "story": story.id,
+            "feature": feature_id,
+        },
+    )
+    _emit(
+        {
+            "story": story.id,
+            "feature": feature_id,
+            "status": state.status,
+            "next": f"devplane approve {feature_id} spec",
+        }
+    )
 
 
 _MAX_BODY_FILE_BYTES = 256 * 1024
@@ -1615,7 +1697,10 @@ def backlog_board(
     try:
         if output_format not in {"text", "markdown", "json"}:
             raise DevPlaneError(f"unknown board format: {output_format}")
-        board = build_board(load_backlog(_project(project)), max_parallel=max_parallel)
+        root = _project(project)
+        backlog = load_backlog(root)
+        statuses = {story.feature: _feature_status(root, story.feature) for story in backlog.stories if story.feature}
+        board = build_board(backlog, max_parallel=max_parallel, feature_statuses=statuses)
     except DevPlaneError as exc:
         _fail(exc)
     if output_format == "json":

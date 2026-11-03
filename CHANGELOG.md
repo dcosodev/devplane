@@ -8,6 +8,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
+- `devplane backlog specify <id>`: starts the governed Spec Kit flow for a story. Its title and body become the feature description, the `specify` phase runs through the same code as `devplane run --stop-after tasks`, and the story is linked to the feature run in a commit of its own that contains only the story file. If the phase fails nothing is linked. Integrating the feature later moves its linked `ready` and `in_progress` stories to `review`.
+- `devplane backlog show` and `devplane backlog board` report the status of the feature run a story is linked to.
 - `devplane backlog create`: writes a validated story file with a generated id (`US-NNN`), a slug from the title and exclusive creation, so an existing file is never overwritten. It checks the new story against the whole backlog (unique id, known dependencies) and records `backlog.story.created` in the audit log.
 - `devplane backlog board`: the backlog as columns by status, with the planner's verdict on each ready story (runs next, queued in a later wave and why, deferred behind in-progress work, or waiting for dependencies) and the next batch. Output as text, Markdown tables or JSON.
 
