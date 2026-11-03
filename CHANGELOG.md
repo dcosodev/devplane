@@ -14,6 +14,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Claude Code runtime option `writeGuard: true`: registers `devplane guard` as a per-assignment `PreToolUse` hook through `--settings`. The execution pipeline writes a per-assignment policy outside the worktree and fails the assignment, rather than running unguarded, if it cannot. Off by default; other adapters reject the option.
 
 - `devplane backlog` (`check`, `list`, `show`, `next`, `plan`, `status`): a repository-scoped story backlog stored as Markdown files in `backlog/`, with dependency and cycle validation, a fixed status transition table and a planner that groups ready stories into parallel batches with pairwise disjoint write scopes. See `docs/backlog.md`.
+- `devplane backlog run`: claims the next batch of ready stories in a `chore(backlog): start …` commit that becomes the approved base, then implements it with parallel agents through the existing worktree pipeline (story id = assignment id, `write_scope` = allowed paths). `implement --execution-plan`, `retry` and `integrate` understand backlog plans; `integrate` records integrated stories as `review`. `validate_execution_plan` is now a reusable function.
 
 ### Changed
 

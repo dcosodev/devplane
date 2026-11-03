@@ -371,7 +371,12 @@ def load_execution_plan(path: Path) -> ExecutionPlan:
         base_commit=str(metadata.get("baseCommit", "")),
         assignments=tuple(assignments),
     )
-    # Re-validate the fields that can lead to filesystem or Git operations.
+    validate_execution_plan(plan)
+    return plan
+
+
+def validate_execution_plan(plan: ExecutionPlan) -> None:
+    """Check every field that can lead to filesystem or Git operations."""
     if not _SAFE_ID.fullmatch(plan.run_id):
         raise DevPlaneError("execution plan contains an unsafe run id")
     _safe_relative_path(plan.source_tasks, label="tasks source")
@@ -410,4 +415,3 @@ def load_execution_plan(path: Path) -> ExecutionPlan:
     for group in parallel_groups.values():
         if len(group) > 1:
             _validate_parallel_scopes(group)
-    return plan
