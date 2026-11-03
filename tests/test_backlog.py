@@ -417,3 +417,54 @@ def test_set_status_refuses_to_leave_the_backlog_invalid(tmp_path: Path) -> None
         set_status(tmp_path, "US-001", "ready")
 
     assert path.read_text() == before
+
+
+# ---------------------------------------------------------------------------
+# linking a story to a feature run
+# ---------------------------------------------------------------------------
+
+
+def test_set_feature_adds_the_key_and_leaves_everything_else_alone(tmp_path: Path) -> None:
+    from devplane.backlog import set_feature
+
+    path = _story(tmp_path, "US-001", status="ready", scope=["src/a.py"], body="Body with feature: not yaml\n")
+    original = path.read_text()
+
+    story = set_feature(tmp_path, "US-001", "spec-US-001")
+
+    assert story.feature == "spec-US-001"
+    updated = path.read_text()
+    assert updated.replace("feature: spec-US-001\n", "", 1) == original
+    assert "Body with feature: not yaml" in updated
+    assert load_backlog(tmp_path).get("US-001").feature == "spec-US-001"
+
+
+def test_set_feature_replaces_an_existing_value(tmp_path: Path) -> None:
+    from devplane.backlog import set_feature
+
+    path = _story(tmp_path, "US-001", extra="feature: old-run")
+
+    set_feature(tmp_path, "US-001", "new-run")
+
+    assert path.read_text().count("feature:") == 1
+    assert load_backlog(tmp_path).get("US-001").feature == "new-run"
+
+
+@pytest.mark.parametrize("value", ["", "bad feature!", "../x", "x" * 200])
+def test_set_feature_rejects_invalid_values_and_leaves_the_file_alone(tmp_path: Path, value: str) -> None:
+    from devplane.backlog import set_feature
+
+    path = _story(tmp_path, "US-001")
+    before = path.read_text()
+
+    with pytest.raises(DevPlaneError, match="feature"):
+        set_feature(tmp_path, "US-001", value)
+
+    assert path.read_text() == before
+
+
+def test_set_feature_rejects_unknown_stories(tmp_path: Path) -> None:
+    from devplane.backlog import set_feature
+
+    with pytest.raises(DevPlaneError, match="unknown story"):
+        set_feature(tmp_path, "US-404", "run-1")

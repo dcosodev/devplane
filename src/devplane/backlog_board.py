@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from .backlog import PRIORITIES, STATUSES, Backlog, Story, plan_batches
@@ -37,7 +38,12 @@ def _note(story: Story, ready_notes: dict[str, str]) -> str:
     return ""
 
 
-def build_board(backlog: Backlog, *, max_parallel: int) -> dict[str, Any]:
+def build_board(
+    backlog: Backlog,
+    *,
+    max_parallel: int,
+    feature_statuses: Mapping[str, str | None] | None = None,
+) -> dict[str, Any]:
     """Group stories by status; ready cards say whether and when the planner runs them."""
     ready_notes, next_batch = _ready_notes(backlog, max_parallel)
     columns: dict[str, list[dict[str, Any]]] = {status: [] for status in STATUSES}
@@ -50,6 +56,7 @@ def build_board(backlog: Backlog, *, max_parallel: int) -> dict[str, Any]:
                 "depends_on": list(story.depends_on),
                 "write_scope": list(story.write_scope),
                 "feature": story.feature,
+                "feature_status": (feature_statuses or {}).get(story.feature) if story.feature else None,
                 "note": _note(story, ready_notes),
             }
         )
@@ -66,6 +73,9 @@ def render_text(board: dict[str, Any]) -> str:
         lines.append(f"{_heading(status).upper()} ({len(cards)})")
         for card in cards:
             suffix = f"  — {card['note']}" if card["note"] else ""
+            if card["feature"]:
+                status_part = f": {card['feature_status']}" if card["feature_status"] else ""
+                suffix += f"  [feature {card['feature']}{status_part}]"
             lines.append(f"  {card['id']:<8}{card['priority']:<8}{card['title']}{suffix}")
     next_batch = ", ".join(board["next_batch"]) or "none"
     lines.append("")

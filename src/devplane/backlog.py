@@ -50,6 +50,7 @@ _FRONTMATTER = re.compile(
     r"\A---[ \t]*\r?\n(?P<front>.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL
 )
 _STATUS_LINE = re.compile(r"(?m)^status:[ \t]*.*$")
+_FEATURE_LINE = re.compile(r"(?m)^feature:[ \t]*.*$")
 _GOVERNED_FOLDED = frozenset(name.casefold() for name in GOVERNED_ROOTS)
 
 
@@ -367,6 +368,24 @@ def set_status(project: Path, story_id: str, new_status: str) -> Story:
     if _STATUS_LINE.search(front) is None:
         raise _fail(story.path, "frontmatter has no status line to update")
     new_front = _STATUS_LINE.sub(f"status: {new_status}", front, count=1)
+    updated = text[: match.start("front")] + new_front + text[match.end("front") :]
+    result = _parse_text(updated, story.path)  # never leave an invalid story on disk
+    _write_atomic(story.path, updated)
+    return result
+
+
+def set_feature(project: Path, story_id: str, feature: str) -> Story:
+    """Link a story to a feature run by setting its frontmatter ``feature`` line."""
+    story = load_backlog(project).get(story_id)
+    if not isinstance(feature, str) or _FEATURE.fullmatch(feature) is None:
+        raise _fail(story.path, f"invalid feature: {feature!r}")
+    text = story.path.read_text(encoding="utf-8")
+    match = _FRONTMATTER.match(text)
+    if match is None:  # pragma: no cover - load_backlog already parsed this file
+        raise _fail(story.path, "story has no frontmatter block")
+    front = match.group("front")
+    line = f"feature: {feature}"
+    new_front = _FEATURE_LINE.sub(line, front, count=1) if _FEATURE_LINE.search(front) else f"{front}\n{line}"
     updated = text[: match.start("front")] + new_front + text[match.end("front") :]
     result = _parse_text(updated, story.path)  # never leave an invalid story on disk
     _write_atomic(story.path, updated)

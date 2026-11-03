@@ -33,11 +33,13 @@ def _story(
     body: str = "Do the thing.\n",
     depends_on: str = "[]",
     validation: str | None = None,
+    feature: str | None = None,
 ) -> Path:
     directory = project / "backlog"
     directory.mkdir(exist_ok=True)
     path = directory / f"{story_id}.md"
     extra = f"validation: {validation}\n" if validation is not None else ""
+    extra += f"feature: {feature}\n" if feature is not None else ""
     path.write_text(
         f"---\nid: {story_id}\ntitle: {title or 'Story ' + story_id}\nstatus: {status}\n"
         f"depends_on: {depends_on}\nwrite_scope: ['{scope}']\n{extra}---\n{body}",
@@ -391,3 +393,97 @@ def test_backlog_batch_runs_through_the_pipeline_and_integrates(tmp_path: Path) 
     statuses = {story.id: story.status for story in load_backlog(project).stories}
     assert statuses == {"US-001": "review", "US-002": "review", "US-003": "ready"}
     assert run_checked(["git", "status", "--porcelain"], project).stdout == ""
+
+
+# ---------------------------------------------------------------------------
+# linking stories to Spec Kit feature runs
+# ---------------------------------------------------------------------------
+
+from devplane.backlog_run import link_story_to_feature, mark_feature_stories_review
+
+
+def test_linking_commits_only_the_story_and_keeps_other_staged_changes(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001")
+    _commit_all(project)
+    (project / "unrelated.txt").write_text("staged, not mine\n", encoding="utf-8")
+    run_checked(["git", "add", "unrelated.txt"], project)
+
+    link_story_to_feature(project, "US-001", "spec-US-001")
+
+    assert _stories(project, "US-001")[0].feature == "spec-US-001"
+    subject = run_checked(["git", "log", "-1", "--format=%s"], project).stdout.strip()
+    assert subject == "chore(backlog): link US-001 to feature spec-US-001"
+    committed = run_checked(["git", "show", "--name-only", "--format=", "HEAD"], project).stdout.split()
+    assert committed == ["backlog/US-001.md"]
+    assert run_checked(["git", "status", "--porcelain"], project).stdout.strip() == "A  unrelated.txt"
+    assert "co-authored" not in run_checked(["git", "log", "-1", "--format=%B"], project).stdout.lower()
+
+
+def test_linking_is_idempotent_and_refuses_a_different_feature(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001")
+    _commit_all(project)
+    link_story_to_feature(project, "US-001", "run-a")
+    head = run_checked(["git", "rev-parse", "HEAD"], project).stdout
+
+    link_story_to_feature(project, "US-001", "run-a")
+    assert run_checked(["git", "rev-parse", "HEAD"], project).stdout == head
+    with pytest.raises(DevPlaneError, match="already linked"):
+        link_story_to_feature(project, "US-001", "run-b")
+
+
+def test_linking_restores_the_story_when_the_commit_fails(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    path = _story(project, "US-001")
+    _commit_all(project)
+    hook = project / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(hook.stat().st_mode | stat.S_IXUSR)
+    original = path.read_text()
+
+    with pytest.raises(DevPlaneError):
+        link_story_to_feature(project, "US-001", "run-a")
+
+    assert path.read_text() == original
+    assert run_checked(["git", "status", "--porcelain"], project).stdout == ""
+
+
+def test_integrating_a_feature_moves_its_linked_stories_to_review(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001", status="in_progress", scope="src/a.py", feature="run-x")
+    _story(project, "US-002", status="ready", scope="src/b.py", feature="run-x")
+    _story(project, "US-003", status="backlog", feature="run-x")
+    _story(project, "US-004", status="in_progress", scope="src/d.py", feature="run-y")
+    _story(project, "US-005", status="in_progress", scope="src/e.py")
+    _commit_all(project)
+
+    moved = mark_feature_stories_review(project, "run-x")
+
+    assert moved == ["US-001", "US-002"]
+    statuses = {story.id: story.status for story in load_backlog(project).stories}
+    assert statuses == {
+        "US-001": "review",
+        "US-002": "review",
+        "US-003": "backlog",
+        "US-004": "in_progress",
+        "US-005": "in_progress",
+    }
+    subject = run_checked(["git", "log", "-1", "--format=%s"], project).stdout.strip()
+    assert subject == "chore(backlog): ready for review US-001, US-002 (feature run-x)"
+    assert run_checked(["git", "status", "--porcelain"], project).stdout == ""
+
+
+def test_integrating_a_feature_without_linked_stories_changes_nothing(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001", status="ready", scope="src/a.py")
+    head = _commit_all(project)
+
+    assert mark_feature_stories_review(project, "run-x") == []
+    assert run_checked(["git", "rev-parse", "HEAD"], project).stdout.strip() == head
+
+
+def test_a_project_without_a_backlog_has_nothing_to_move(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+
+    assert mark_feature_stories_review(project, "run-x") == []
