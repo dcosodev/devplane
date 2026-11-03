@@ -220,3 +220,107 @@ def test_invalid_policy_files_are_rejected(tmp_path: Path, content: str) -> None
 def test_missing_policy_file_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(DevPlaneError):
         load_policy(tmp_path / "absent.json")
+
+
+# ---------------------------------------------------------------------------
+# Hermes (pre_tool_call shell hook)
+# ---------------------------------------------------------------------------
+
+from devplane.guard import decide_hermes
+
+
+def _hermes(tool: str, **tool_input: Any) -> dict[str, Any]:
+    return {"hook_event_name": "pre_tool_call", "tool_name": tool, "tool_input": tool_input}
+
+
+def test_hermes_write_file_and_replace_patch_are_checked_against_the_scope(tmp_path: Path) -> None:
+    policy = _policy(tmp_path, "src/**")
+
+    assert decide_hermes(policy, _hermes("write_file", path="src/a.py", content="x")).allowed is True
+    assert decide_hermes(policy, _hermes("write_file", path="docs/a.md", content="x")).allowed is False
+    assert decide_hermes(policy, _hermes("patch", path="src/a.py", old_string="a", new_string="b")).allowed is True
+    assert decide_hermes(
+        policy, _hermes("patch", mode="replace", path="docs/a.md", old_string="a", new_string="b")
+    ).allowed is False
+
+
+@pytest.mark.parametrize("tool", ["terminal", "read_file", "search_files", "web_search"])
+def test_hermes_tools_that_do_not_write_files_are_not_governed(tmp_path: Path, tool: str) -> None:
+    policy = _policy(tmp_path, "src/only.py")
+
+    assert decide_hermes(policy, _hermes(tool, path="/etc/passwd", command="ls")).allowed is True
+
+
+def test_hermes_applies_the_same_escape_and_governed_path_rules(tmp_path: Path) -> None:
+    root = tmp_path / "work"
+    (root / ".git").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    os.symlink(outside, root / "link")
+    policy = _policy(root, "**")
+
+    for path in ("../x.py", str(tmp_path / "x.py"), "link/evil.py", ".git/config", ".GIT/config", ".claude/a"):
+        assert decide_hermes(policy, _hermes("write_file", path=path, content="x")).allowed is False, path
+
+
+V4A = "*** Begin Patch\n*** Update File: src/a.py\n@@\n-old\n+new\n*** Add File: src/b.py\n+x\n*** End Patch\n"
+
+
+def test_hermes_multi_file_patches_check_every_file(tmp_path: Path) -> None:
+    policy = _policy(tmp_path, "src/**")
+
+    assert decide_hermes(policy, _hermes("patch", mode="patch", patch=V4A)).allowed is True
+
+    mixed = V4A.replace("*** Add File: src/b.py", "*** Add File: docs/b.md")
+    denied = decide_hermes(policy, _hermes("patch", mode="patch", patch=mixed))
+    assert denied.allowed is False
+    assert "docs/b.md" in denied.reason
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "***Update File: docs/a.md",
+        "***   Delete File:   docs/a.md",
+        "  *** Update File: docs/a.md",
+        "*** Move File: src/a.py -> docs/a.py",
+        "*** Move File: docs/a.py -> src/a.py",
+    ],
+)
+def test_hermes_patch_headers_are_parsed_as_leniently_as_hermes_does(tmp_path: Path, header: str) -> None:
+    policy = _policy(tmp_path, "src/**")
+    patch = f"*** Begin Patch\n{header}\n+x\n*** End Patch\n"
+
+    assert decide_hermes(policy, _hermes("patch", mode="patch", patch=patch)).allowed is False
+
+
+@pytest.mark.parametrize(
+    "tool_input",
+    [
+        {"mode": "patch", "patch": ""},
+        {"mode": "patch", "patch": "just text"},
+        {"mode": "patch", "patch": "*** Begin Patch\n*** Rename File: src/a.py\n*** End Patch\n"},
+        {"mode": "patch", "patch": "*** Begin Patch\n*** Update File:\n*** End Patch\n"},
+        {
+            "mode": "patch",
+            "patch": "*** Begin Patch\n*** Update File: src/a.py\n+x\n*** Rename File: docs/a.md\n*** End Patch\n",
+        },
+        {
+            "mode": "patch",
+            "patch": "*** Begin Patch\n*** Update File: src/a.py\n+x\n*** Update\nFile: docs/a.md\n*** End Patch\n",
+        },
+        {"mode": "patch"},
+        {"mode": "surprise", "path": "src/a.py"},
+        {"mode": "replace"},
+        {},
+    ],
+)
+def test_hermes_patches_with_unparseable_targets_are_denied(tmp_path: Path, tool_input: dict[str, Any]) -> None:
+    policy = _policy(tmp_path, "**")
+
+    assert decide_hermes(policy, _hermes("patch", **tool_input)).allowed is False
+
+
+@pytest.mark.parametrize("event", [None, [], {}, {"tool_name": 3}, {"tool_name": "write_file"}, {"tool_name": "write_file", "tool_input": []}])
+def test_hermes_malformed_events_are_denied(tmp_path: Path, event: Any) -> None:
+    assert decide_hermes(_policy(tmp_path, "**"), event).allowed is False

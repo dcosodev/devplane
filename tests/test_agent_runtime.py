@@ -495,10 +495,184 @@ def test_write_guard_option_must_be_a_boolean() -> None:
         )
 
 
-@pytest.mark.parametrize("adapter", ["hermes", "opencode"])
-def test_other_adapters_reject_the_write_guard_option(adapter: str) -> None:
+@pytest.mark.parametrize("adapter", ["codex", "opencode"])
+def test_adapters_without_a_pre_execution_hook_reject_the_write_guard_option(adapter: str) -> None:
     request = SessionRequest("a1", "x", Path("/tmp/work"))
     config = AgentRuntimeConfig(adapter, adapter, None, None, {"writeGuard": True})
 
     with pytest.raises(DevPlaneError, match="unsupported"):
         build_agent_args(request, config)
+
+
+# ---------------------------------------------------------------------------
+# Hermes write guard
+# ---------------------------------------------------------------------------
+
+import os
+import subprocess as _subprocess
+
+from devplane.agent_runtime import (
+    WRITE_GUARD_SUPPORT,
+    session_environment,
+    verify_write_guard_ready,
+)
+
+
+def _hermes_config(**options: object) -> AgentRuntimeConfig:
+    return AgentRuntimeConfig("hermes", "hermes", None, None, dict(options))  # type: ignore[arg-type]
+
+
+def test_hermes_accepts_the_write_guard_option_and_needs_a_policy_for_it() -> None:
+    config = _hermes_config(writeGuard=True)
+
+    with pytest.raises(DevPlaneError, match="write guard"):
+        build_agent_args(SessionRequest("t", "x", Path("/tmp/w")), config)
+
+    args = build_agent_args(SessionRequest("t", "x", Path("/tmp/w"), guard_policy=Path("/s/g.json")), config)
+    assert args[:2] == ["hermes", "chat"]
+    assert "--settings" not in args
+
+
+def test_hermes_write_guard_option_must_be_a_boolean() -> None:
+    request = SessionRequest("t", "x", Path("/tmp/w"), guard_policy=Path("/s/g.json"))
+
+    with pytest.raises(DevPlaneError, match="writeGuard"):
+        build_agent_args(request, _hermes_config(writeGuard="yes"))
+
+
+def test_session_environment_exports_the_policy_only_for_a_guarded_hermes_session() -> None:
+    policy = Path("/state/guard-t.json")
+    guarded = SessionRequest("t", "x", Path("/tmp/w"), guard_policy=policy)
+
+    environment = session_environment(guarded, _hermes_config(writeGuard=True))
+
+    assert environment is not None
+    assert environment["DEVPLANE_GUARD_POLICY"] == str(policy)
+    assert environment["PATH"] == os.environ["PATH"]
+    assert session_environment(guarded, _hermes_config()) is None
+    assert session_environment(SessionRequest("t", "x", Path("/tmp/w")), _hermes_config(writeGuard=True)) is None
+    claude = AgentRuntimeConfig("claude", "claude", None, None, {"writeGuard": True})
+    assert session_environment(guarded, claude) is None
+
+
+def test_run_sessions_hands_the_policy_environment_to_the_runner() -> None:
+    seen: list[dict | None] = []
+
+    def runner(args: list[str], cwd: Path, **kwargs: object) -> _subprocess.CompletedProcess[str]:
+        seen.append(kwargs.get("environment"))  # type: ignore[arg-type]
+        return _subprocess.CompletedProcess(args, 0, stdout="ok", stderr="")
+
+    guarded = SessionRequest("t1", "x", Path("/tmp/w"), guard_policy=Path("/state/g1.json"))
+    plain = SessionRequest("t2", "x", Path("/tmp/w"))
+
+    run_sessions([guarded], 1, runtime=_hermes_config(writeGuard=True), runner=runner)
+    run_sessions([plain], 1, runtime=_hermes_config(), runner=runner)
+
+    assert seen[0] is not None and seen[0]["DEVPLANE_GUARD_POLICY"] == "/state/g1.json"
+    assert seen[1] is None
+
+
+def test_adapters_declare_their_write_guard_support() -> None:
+    assert WRITE_GUARD_SUPPORT == {
+        "claude": "pre-execution",
+        "hermes": "pre-execution",
+        "codex": "post-run-only",
+        "opencode": "post-run-only",
+    }
+
+
+LIST_HEADER = "Configured shell hooks ({count} total):\n\n"
+
+
+def _hooks_list(*entries: tuple[str, str, str | None, bool]) -> str:
+    """Render ``hermes hooks list`` output: (event, command, matcher, allowed)."""
+    lines = [LIST_HEADER.format(count=len(entries))]
+    for event in sorted({entry[0] for entry in entries}):
+        lines.append(f"  [{event}]\n")
+        for entry_event, command, matcher, allowed in entries:
+            if entry_event != event:
+                continue
+            matcher_part = f" matcher={matcher!r}" if matcher else ""
+            status = "✓ allowed" if allowed else "✗ not allowlisted"
+            lines.append(f"    - {command}{matcher_part} (timeout=10s, {status})\n")
+            if allowed:
+                lines.append("      approved_at: 2026-11-03T10:00:00+00:00\n")
+        lines.append("\n")
+    return "".join(lines)
+
+
+def _list_runner(output: str, calls: list | None = None):
+    def runner(args: list[str], cwd: Path, **kwargs: object) -> _subprocess.CompletedProcess[str]:
+        if calls is not None:
+            calls.append(args)
+        return _subprocess.CompletedProcess(args, 0, stdout=output, stderr="")
+
+    return runner
+
+
+GUARD_COMMAND = "/opt/venv/bin/devplane guard --hermes"
+
+
+@pytest.mark.parametrize("matcher", ["write_file|patch", "(write_file|patch)", None, ".*"])
+def test_verify_accepts_an_installed_and_approved_hook_that_covers_both_tools(matcher: str | None) -> None:
+    calls: list = []
+    output = _hooks_list(("pre_tool_call", GUARD_COMMAND, matcher, True))
+
+    verify_write_guard_ready(_hermes_config(writeGuard=True), _list_runner(output, calls))
+
+    assert calls == [["hermes", "hooks", "list"]]
+
+
+def test_verify_accepts_the_hook_next_to_unrelated_hooks() -> None:
+    output = _hooks_list(
+        ("post_tool_call", "/bin/audit-log", None, True),
+        ("pre_tool_call", "/bin/other-hook --flag", "terminal", True),
+        ("pre_tool_call", GUARD_COMMAND, "write_file|patch", True),
+    )
+
+    verify_write_guard_ready(_hermes_config(writeGuard=True), _list_runner(output))
+
+
+@pytest.mark.parametrize(
+    ("output", "problem"),
+    [
+        ("No shell hooks configured in ~/.hermes/config.yaml.\n", "not installed"),
+        (_hooks_list(("pre_tool_call", "/bin/other-hook", None, True)), "not installed"),
+        (_hooks_list(("post_tool_call", GUARD_COMMAND, None, True)), "not installed"),
+        (_hooks_list(("pre_tool_call", GUARD_COMMAND, "write_file|patch", False)), "allowlist"),
+        (_hooks_list(("pre_tool_call", GUARD_COMMAND, "write_file", True)), "patch"),
+        (_hooks_list(("pre_tool_call", GUARD_COMMAND, "terminal", True)), "write_file"),
+        (_hooks_list(("pre_tool_call", "/bin/devplane guard", None, True)), "not installed"),
+        ("something completely different\n", "not installed"),
+        ("", "not installed"),
+    ],
+    ids=["none", "other-hook", "wrong-event", "not-allowlisted", "misses-patch", "misses-write", "no-hermes-flag", "garbage", "empty"],
+)
+def test_verify_refuses_when_the_hook_is_not_effective(output: str, problem: str) -> None:
+    with pytest.raises(DevPlaneError, match=problem):
+        verify_write_guard_ready(_hermes_config(writeGuard=True), _list_runner(output))
+
+
+def test_verify_points_to_the_documentation_and_the_exact_hook_command() -> None:
+    with pytest.raises(DevPlaneError, match=r"guard --hermes.*runtime-adapters\.md"):
+        verify_write_guard_ready(_hermes_config(writeGuard=True), _list_runner(""))
+
+
+def test_verify_refuses_when_hermes_cannot_be_queried() -> None:
+    def broken(args: list[str], cwd: Path, **kwargs: object):
+        raise DevPlaneError("required executable not found: hermes")
+
+    with pytest.raises(DevPlaneError, match="hermes"):
+        verify_write_guard_ready(_hermes_config(writeGuard=True), broken)
+
+
+def test_verify_does_nothing_when_no_hermes_guard_was_requested() -> None:
+    calls: list = []
+    runner = _list_runner("", calls)
+
+    verify_write_guard_ready(_hermes_config(), runner)
+    verify_write_guard_ready(_hermes_config(writeGuard=False), runner)
+    verify_write_guard_ready(AgentRuntimeConfig("claude", "claude", None, None, {"writeGuard": True}), runner)
+    verify_write_guard_ready(AgentRuntimeConfig("codex", "codex", None, None, {}), runner)
+
+    assert calls == []

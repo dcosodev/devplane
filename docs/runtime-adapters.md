@@ -41,6 +41,37 @@ Set `provider` and `model` to override what your Hermes installation has configu
 
 The prompt is one argv element. `--source tool` marks sessions as third-party integration work.
 
+### Write guard
+
+Hermes can run a shell command before each tool call (`pre_tool_call`), so `devplane guard --hermes` can stop an out-of-scope file write at the first attempt, like the Claude Code guard. Unlike Claude Code, Hermes reads its hooks from its own global configuration and offers no per-session registration, so you install the hook once and DevPlane never edits your Hermes configuration.
+
+1. Add the hook to `~/.hermes/config.yaml`, with the absolute path of your `devplane` executable:
+
+   ```yaml
+   hooks:
+     pre_tool_call:
+       - matcher: "write_file|patch"
+         command: "/absolute/path/to/devplane guard --hermes"
+         timeout: 20
+   ```
+
+2. Approve it once. Hermes asks for consent the first time it runs a hook; `hermes hooks list` must show `✓ allowed` next to it.
+3. Turn the guard on for the project in `.devplane/project.yaml`, then run `devplane sync`:
+
+   ```yaml
+   spec:
+     runtime:
+       adapter: hermes
+       options:
+         writeGuard: true
+   ```
+
+For each assignment DevPlane writes the same policy file as for Claude Code and exports its path to that session as `DEVPLANE_GUARD_POLICY`. The hook does nothing when that variable is absent, so your other Hermes sessions are unaffected. It checks `write_file` and `patch`, including multi-file patches: every file named in a patch is checked, and a patch with a `***` operation it does not understand is refused.
+
+Before launching any agent (`backlog run`, `implement`, `retry`) DevPlane runs `hermes hooks list` and refuses to continue, before claiming anything, if the hook is missing, not approved, or its matcher does not cover both tools. The option is off by default.
+
+Limits: Hermes lets a tool call proceed when a hook command cannot run at all, so unlike the Claude Code guard this one cannot be fail-closed from the outside (inside the guard every failure answers with a block). `terminal` can still write files. The patch parsing mirrors Hermes' own and was checked against Hermes 0.19.0 (`hermes hooks test`); the post-run allowed-path check stays authoritative.
+
 ## Claude Code
 
 The adapter uses non-interactive `claude --print`, text output, no session persistence, and `acceptEdits` permission mode. It does not pass `--dangerously-skip-permissions`.
@@ -83,7 +114,7 @@ DevPlane writes a per-assignment policy (worktree root plus the assignment's wri
 - resolve outside the worktree, including through symlinks;
 - are inside a governed root (`.agents`, `.claude`, `.devplane`, `.git`, `.hermes`, `.opencode`, `.specify`, `specs`), matched case-insensitively.
 
-Every failure path exits with code 2, the only code Claude Code treats as a block. If the policy cannot be written, the assignment fails instead of running unguarded. The option is off by default and only the Claude Code adapter accepts it.
+Every failure path exits with code 2, the only code Claude Code treats as a block. If the policy cannot be written, the assignment fails instead of running unguarded. The option is off by default. Only the Claude Code and Hermes adapters accept it; `devplane adapters` reports `write_guard: pre-execution` for them and `post-run-only` for the others.
 
 Limits: the guard does not govern shell commands, which can still write files; it does not run if hooks are disabled or restricted by user or managed Claude Code settings, or if the hook command cannot start (Claude Code treats that as a non-blocking error). The post-run allowed-path check therefore remains authoritative. Adapters without a guard lose only the early detection, not the enforcement.
 

@@ -26,6 +26,18 @@ import sys
 if "--version" in sys.argv:
     print("0.19.0")
     raise SystemExit(0)
+if sys.argv[1:3] == ["hooks", "list"]:
+    mode = os.environ.get("DEVPLANE_FAKE_HOOK", "ok")
+    if mode == "missing":
+        print("No shell hooks configured in ~/.hermes/config.yaml.")
+        raise SystemExit(0)
+    status = "✓ allowed" if mode == "ok" else "✗ not allowlisted"
+    print("Configured shell hooks (1 total):\\n\\n  [pre_tool_call]")
+    print(f"    - /opt/venv/bin/devplane guard --hermes matcher='write_file|patch' (timeout=10s, {status})")
+    raise SystemExit(0)
+if os.environ.get("FAKE_ENV_LOG"):
+    with open(os.environ["FAKE_ENV_LOG"], "a") as log:
+        log.write(os.environ.get("DEVPLANE_GUARD_POLICY", "<unset>") + "\\n")
 if os.environ.get("DEVPLANE_FAKE_AGENT") == "skip":
     print("agent did nothing", file=sys.stderr)
     raise SystemExit(0)
@@ -454,3 +466,100 @@ def test_the_chain_stops_when_a_wave_cannot_be_integrated(
     assert len(outcome["waves"]) == 1
     assert expected_key in outcome["waves"][0]
     assert _statuses(project) == {"US-001": "in_progress", "US-002": "ready", "US-003": "ready"}
+
+
+# ---------------------------------------------------------------------------
+# Hermes write guard
+# ---------------------------------------------------------------------------
+
+
+def _enable_guard(project: Path) -> None:
+    import yaml
+
+    path = project / ".devplane" / "project.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["spec"]["runtime"]["options"] = {"writeGuard": True}
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    assert runner.invoke(app, ["sync", "--project", str(project)]).exit_code == 0
+    _git(project, "add", "-A")
+    _git(project, "commit", "-m", "chore: enable the write guard")
+
+
+def test_adapters_report_which_ones_can_guard_writes_before_execution() -> None:
+    import yaml
+
+    listed = yaml.safe_load(runner.invoke(app, ["adapters"]).output)["adapters"]
+
+    assert {item["id"]: item["write_guard"] for item in listed} == {
+        "hermes": "pre-execution",
+        "claude": "pre-execution",
+        "codex": "post-run-only",
+        "opencode": "post-run-only",
+    }
+
+
+def test_a_guarded_hermes_run_hands_every_session_its_policy(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_guard(project)
+    log = project.parent / "env.log"
+    monkeypatch.setenv("FAKE_ENV_LOG", str(log))
+
+    result = _run(project, "--run-id", "guarded", "--max-agents", "2")
+
+    assert result.exit_code == 0, result.output
+    policies = sorted(Path(line) for line in log.read_text().splitlines())
+    runs = project / ".git" / "devplane" / "runs" / "guarded"
+    assert policies == [runs / "guard-US-001.json", runs / "guard-US-002.json"]
+    first = json.loads(policies[0].read_text())
+    assert first["root"].endswith("/guarded/US-001")
+    assert first["allowed_paths"] == ["src/auth.py"]
+
+
+@pytest.mark.parametrize(
+    ("hook_state", "message"),
+    [("missing", "not installed"), ("unapproved", "allowlist")],
+)
+def test_a_guarded_hermes_run_is_refused_before_claiming_when_the_hook_is_not_effective(
+    project: Path, monkeypatch: pytest.MonkeyPatch, hook_state: str, message: str
+) -> None:
+    _enable_guard(project)
+    monkeypatch.setenv("DEVPLANE_FAKE_HOOK", hook_state)
+    head = _git(project, "rev-parse", "HEAD")
+
+    result = _run(project)
+
+    assert result.exit_code == 1
+    assert message in result.output
+    assert _git(project, "rev-parse", "HEAD") == head
+    assert _statuses(project) == {"US-001": "ready", "US-002": "ready", "US-003": "ready"}
+
+
+def test_retry_and_implement_check_the_hook_again(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_guard(project)
+    monkeypatch.setenv("DEVPLANE_FAKE_AGENT", "skip")
+    assert _run(project, "--run-id", "again").exit_code == 1
+    monkeypatch.delenv("DEVPLANE_FAKE_AGENT")
+    monkeypatch.setenv("DEVPLANE_FAKE_HOOK", "missing")
+
+    retried = runner.invoke(app, ["retry", "again", "--project", str(project)])
+    plan = project / ".git" / "devplane" / "runs" / "again" / "execution-plan.yaml"
+    implemented = runner.invoke(
+        app,
+        ["implement", "--parallel", "--execution-plan", str(plan), "--project", str(project)],
+    )
+
+    assert retried.exit_code == 1 and "not installed" in retried.output
+    assert implemented.exit_code == 1 and "not installed" in implemented.output
+
+
+def test_hermes_without_the_option_never_asks_about_hooks(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DEVPLANE_FAKE_HOOK", "missing")
+
+    result = _run(project)
+
+    assert result.exit_code == 0, result.output

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,8 @@ WRITE_TOOLS = {
     "MultiEdit": "file_path",
     "NotebookEdit": "notebook_path",
 }
+#: Hermes tools that write files.
+HERMES_WRITE_TOOLS = frozenset({"write_file", "patch"})
 _GOVERNED_FOLDED = frozenset(name.casefold() for name in GOVERNED_ROOTS)
 
 
@@ -66,6 +69,11 @@ def decide(policy: GuardPolicy, event: object) -> GuardDecision:
     if not isinstance(target, str) or not target:
         return _deny(f"{tool} event has no usable {field}")
 
+    return _decide_path(policy, target)
+
+
+def _decide_path(policy: GuardPolicy, target: str) -> GuardDecision:
+    """Whether writing ``target`` (relative to the worktree, or absolute) is in scope."""
     real_root = Path(os.path.realpath(policy.root))
     candidate = Path(target)
     if not candidate.is_absolute():
@@ -82,6 +90,68 @@ def decide(policy: GuardPolicy, event: object) -> GuardDecision:
         return _deny(f"{relative} is not a canonical project path")
     if not allowed:
         return _deny(f"{relative} is outside the allowed write scopes")
+    return GuardDecision(True)
+
+
+# Hermes patch mode ("V4A") names its targets in "*** <Op> File:" header lines. Hermes' own
+# parser accepts "***Update File:" with no space after the asterisks, and an earlier check
+# that required the space could be bypassed, so these patterns are deliberately as lenient.
+_V4A_FILE = re.compile(
+    r"^[ \t]*\*\*\*[ \t]*(?:Update|Add|Delete)[ \t]+File:[ \t]*(\S.*?)[ \t]*$", re.MULTILINE
+)
+_V4A_MOVE = re.compile(
+    r"^[ \t]*\*\*\*[ \t]*Move[ \t]+File:[ \t]*(\S.*?)[ \t]*->[ \t]*(\S.*?)[ \t]*$", re.MULTILINE
+)
+_V4A_MARKER = re.compile(r"^[ \t]*\*\*\*", re.MULTILINE)
+_V4A_KNOWN = re.compile(
+    r"^[ \t]*\*\*\*[ \t]*(?:Begin[ \t]+Patch|End[ \t]+Patch|End[ \t]+of[ \t]+File)[ \t]*$", re.MULTILINE
+)
+
+
+def _hermes_patch_targets(patch: object) -> list[str] | None:
+    """Files named by a V4A patch, or ``None`` if it cannot be understood safely."""
+    if not isinstance(patch, str) or not patch.strip():
+        return None
+    targets = [match.group(1) for match in _V4A_FILE.finditer(patch)]
+    for match in _V4A_MOVE.finditer(patch):
+        targets.extend([match.group(1), match.group(2)])
+    # Every "***" line must be either a header we parsed or a known marker; an operation we
+    # do not recognise could write somewhere we did not check.
+    understood = len(_V4A_FILE.findall(patch)) + len(_V4A_MOVE.findall(patch)) + len(_V4A_KNOWN.findall(patch))
+    if not targets or len(_V4A_MARKER.findall(patch)) != understood:
+        return None
+    return targets
+
+
+def decide_hermes(policy: GuardPolicy, event: object) -> GuardDecision:
+    """Decide a Hermes ``pre_tool_call`` shell-hook event for ``write_file`` and ``patch``."""
+    if not isinstance(event, dict):
+        return _deny("malformed hook event")
+    tool = event.get("tool_name")
+    if not isinstance(tool, str) or not tool:
+        return _deny("hook event has no tool name")
+    if tool not in HERMES_WRITE_TOOLS:
+        return GuardDecision(True)
+    args = event.get("tool_input")
+    if not isinstance(args, dict):
+        return _deny(f"{tool} event has no tool input")
+    mode = args.get("mode") or "replace"
+    if tool == "patch" and mode == "patch":
+        patch_targets = _hermes_patch_targets(args.get("patch"))
+        if patch_targets is None:
+            return _deny("patch mode has no file headers DevPlane can check")
+        targets = patch_targets
+    elif tool == "write_file" or mode == "replace":
+        path = args.get("path")
+        if not isinstance(path, str) or not path:
+            return _deny(f"{tool} event has no usable path")
+        targets = [path]
+    else:
+        return _deny(f"patch mode {mode!r} is not understood")
+    for target in targets:
+        decision = _decide_path(policy, target)
+        if not decision.allowed:
+            return decision
     return GuardDecision(True)
 
 

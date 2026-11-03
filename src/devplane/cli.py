@@ -16,7 +16,13 @@ import typer
 import yaml
 
 from . import commands
-from .agent_runtime import list_adapters, runtime_from_manifest
+from .agent_runtime import (
+    GUARD_POLICY_ENV,
+    WRITE_GUARD_SUPPORT,
+    list_adapters,
+    runtime_from_manifest,
+    verify_write_guard_ready,
+)
 from .backlog import (
     STATUSES,
     Story,
@@ -42,7 +48,7 @@ from .execution_plan import (
     load_execution_plan,
     write_execution_plan,
 )
-from .guard import decide, load_policy
+from .guard import decide, decide_hermes, load_policy
 from .parallel import run_parallel_implementation
 from .pipeline import (
     integrate_pipeline,
@@ -283,7 +289,11 @@ def adapters() -> None:
         yaml.safe_dump(
             {
                 "adapters": [
-                    {"id": adapter, "executable": adapter}
+                    {
+                        "id": adapter,
+                        "executable": adapter,
+                        "write_guard": WRITE_GUARD_SUPPORT[adapter],
+                    }
                     for adapter in list_adapters()
                 ]
             },
@@ -1032,6 +1042,7 @@ def implement(
                 )
                 return
             runtime_config = runtime_from_manifest(resolved)
+            verify_write_guard_ready(runtime_config)
             pipeline_result = run_execution_pipeline(
                 project,
                 plan,
@@ -1249,6 +1260,7 @@ def retry(
             if compute_tasks_digest(phases) != plan.tasks_digest:
                 raise DevPlaneError("cannot retry after tasks drift")
         runtime_config = runtime_from_manifest(resolved)
+        verify_write_guard_ready(runtime_config)
         retried = run_execution_pipeline(
             project,
             plan,
@@ -1362,7 +1374,7 @@ def resume(
 _GUARD_INPUT_LIMIT = 1_048_576
 
 
-def _guard_verdict(policy_path: Path) -> str | None:
+def _guard_verdict(policy_path: Path, decider=None) -> str | None:
     """Return a denial reason, or None when the hook event is allowed."""
     try:
         policy = load_policy(policy_path)
@@ -1373,7 +1385,7 @@ def _guard_verdict(policy_path: Path) -> str | None:
             event = json.loads(raw)
         except json.JSONDecodeError:
             return "hook event is not valid JSON"
-        decision = decide(policy, event)
+        decision = (decider or decide)(policy, event)
     except Exception as exc:  # noqa: BLE001 - a guard must fail closed on anything
         return f"{type(exc).__name__}: {exc}"
     return None if decision.allowed else decision.reason
@@ -1382,14 +1394,39 @@ def _guard_verdict(policy_path: Path) -> str | None:
 @app.command("guard")
 def guard_command(
     policy: Annotated[
-        Path, typer.Option("--policy", help="Guard policy JSON written by DevPlane")
-    ],
+        Path | None,
+        typer.Option("--policy", help="Guard policy JSON written by DevPlane"),
+    ] = None,
+    hermes: Annotated[
+        bool,
+        typer.Option(
+            "--hermes",
+            help=f"Speak the Hermes pre_tool_call shell-hook protocol; the policy comes from ${GUARD_POLICY_ENV}",
+        ),
+    ] = False,
 ) -> None:
-    """Claude Code PreToolUse hook: read one event on stdin; exit 2 blocks the tool call.
+    """Pre-execution write guard for an agent's file-writing tools.
 
-    Claude Code treats only exit code 2 as a block, so every failure path,
-    including unexpected errors, exits with 2.
+    Claude Code (default): reads one PreToolUse event on stdin; exit code 2 blocks the
+    tool call, and every failure path exits with 2 because Claude Code treats any other
+    code as a non-blocking error.
+
+    Hermes (--hermes): reads one pre_tool_call event on stdin and prints
+    ``{"decision": "block", ...}`` to block. Outside a DevPlane session, where the policy
+    variable is not set, it does nothing. Hermes continues if the hook command itself
+    cannot run, so inside the guard every failure still answers with a block.
     """
+    if hermes:
+        path = policy or (Path(os.environ[GUARD_POLICY_ENV]) if os.environ.get(GUARD_POLICY_ENV) else None)
+        if path is None:
+            return
+        reason = _guard_verdict(path, decide_hermes)
+        if reason is not None:
+            typer.echo(json.dumps({"decision": "block", "reason": f"DevPlane guard: {reason}"}))
+        return
+    if policy is None:
+        typer.echo("DevPlane guard: --policy is required", err=True)
+        raise typer.Exit(2)
     reason = _guard_verdict(policy)
     if reason is not None:
         typer.echo(f"DevPlane guard: {reason}", err=True)
@@ -1533,6 +1570,7 @@ def _run_backlog_wave(
     state_dir = project / ".git" / "devplane" / "runs" / run_id
     if state_dir.exists():
         raise DevPlaneError(f"run already exists: {run_id}")
+    verify_write_guard_ready(runtime_config)
     batch, _ = _select_batch(project, max_parallel)
     head = commands.run_checked(["git", "rev-parse", "HEAD"], project).stdout.strip()
     manifest_digest = resolved["metadata"]["sourceHash"]
