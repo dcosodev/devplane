@@ -32,13 +32,15 @@ def _story(
     title: str | None = None,
     body: str = "Do the thing.\n",
     depends_on: str = "[]",
+    validation: str | None = None,
 ) -> Path:
     directory = project / "backlog"
     directory.mkdir(exist_ok=True)
     path = directory / f"{story_id}.md"
+    extra = f"validation: {validation}\n" if validation is not None else ""
     path.write_text(
         f"---\nid: {story_id}\ntitle: {title or 'Story ' + story_id}\nstatus: {status}\n"
-        f"depends_on: {depends_on}\nwrite_scope: ['{scope}']\n---\n{body}",
+        f"depends_on: {depends_on}\nwrite_scope: ['{scope}']\n{extra}---\n{body}",
         encoding="utf-8",
     )
     return path
@@ -150,6 +152,61 @@ def test_plans_need_stories_and_validation_commands(tmp_path: Path) -> None:
             base_commit=base,
             validation_commands=[],
         )
+
+
+def test_a_story_validation_replaces_the_default_for_that_story_only(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001", scope="calc/add.py", validation="['python3 -m unittest', 'python3 -c pass']")
+    _story(project, "US-002", scope="docs/HELP.md")
+
+    plan = _plan(project, "US-001", "US-002")
+
+    first, second = plan.assignments
+    assert first.validation == ("python3 -m unittest", "python3 -c pass")
+    assert second.validation == ("python3 -c pass",)
+
+
+def test_stories_that_all_define_validation_need_no_default(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001", validation="['python3 -c pass']")
+    base = run_checked(["git", "rev-parse", "HEAD"], project).stdout.strip()
+
+    plan = build_backlog_plan(
+        _stories(project, "US-001"),
+        run_id="r",
+        manifest_digest="sha256:m",
+        base_commit=base,
+        validation_commands=[],
+    )
+
+    assert plan.assignments[0].validation == ("python3 -c pass",)
+
+
+def test_a_story_without_any_validation_names_itself_in_the_error(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001", validation="['python3 -c pass']")
+    _story(project, "US-002")
+    base = run_checked(["git", "rev-parse", "HEAD"], project).stdout.strip()
+
+    with pytest.raises(DevPlaneError, match="US-002.*validation"):
+        build_backlog_plan(
+            _stories(project, "US-001", "US-002"),
+            run_id="r",
+            manifest_digest="sha256:m",
+            base_commit=base,
+            validation_commands=[],
+        )
+
+
+def test_editing_a_story_validation_counts_as_drift(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    path = _story(project, "US-001", validation="['python3 -c pass']")
+    plan = _plan(project, "US-001")
+
+    path.write_text(path.read_text().replace("python3 -c pass", "python3 --version"))
+
+    with pytest.raises(DevPlaneError, match="drift"):
+        verify_backlog_source(project, plan)
 
 
 def test_story_scopes_the_plan_loader_would_reject_fail_early(tmp_path: Path) -> None:

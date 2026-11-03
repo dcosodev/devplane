@@ -22,6 +22,7 @@ from typing import Any
 import yaml
 
 from .core import GOVERNED_ROOTS, DevPlaneError
+from .pipeline import _command_argv
 from .scopes import scopes_overlap, validate_scope
 
 BACKLOG_DIRECTORY = "backlog"
@@ -39,7 +40,7 @@ _TRANSITIONS: dict[str, frozenset[str]] = {
     "done": frozenset(),
 }
 _KEYS = frozenset(
-    {"id", "title", "status", "priority", "depends_on", "write_scope", "feature"}
+    {"id", "title", "status", "priority", "depends_on", "write_scope", "validation", "feature"}
 )
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _FEATURE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -58,6 +59,7 @@ class Story:
     priority: str
     depends_on: tuple[str, ...]
     write_scope: tuple[str, ...]
+    validation: tuple[str, ...]
     feature: str | None
     body: str
     path: Path = field(compare=False)
@@ -98,6 +100,19 @@ def _string_list(path: Path, key: str, value: Any) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise _fail(path, f"{key} must be a list of strings")
     return value
+
+
+def _validation_commands(path: Path, value: Any) -> tuple[str, ...]:
+    """Validate a story's own validation commands with the pipeline's execution rules."""
+    commands = tuple(command.strip() for command in _string_list(path, "validation", value))
+    for command in commands:
+        if not command or any(character in command for character in "\x00\r\n"):
+            raise _fail(path, "a validation command must be a non-empty single line")
+        try:
+            _command_argv(command)
+        except DevPlaneError as exc:
+            raise _fail(path, f"invalid validation command {command!r}: {exc}") from exc
+    return commands
 
 
 def _parse_text(text: str, path: Path) -> Story:
@@ -146,6 +161,7 @@ def _parse_text(text: str, path: Path) -> Story:
             raise _fail(path, f"write_scope targets a governed path: {scope}")
     if status in _SCOPE_REQUIRED and not scopes:
         raise _fail(path, f"write_scope is required when status is {status}")
+    validation = _validation_commands(path, data.get("validation"))
     feature = data.get("feature")
     if feature is not None and (
         not isinstance(feature, str) or _FEATURE.fullmatch(feature) is None
@@ -159,6 +175,7 @@ def _parse_text(text: str, path: Path) -> Story:
         priority=priority,
         depends_on=depends_on,
         write_scope=tuple(dict.fromkeys(scopes)),
+        validation=validation,
         feature=feature,
         body=text[match.end() :],
         path=path,
