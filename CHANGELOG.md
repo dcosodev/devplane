@@ -6,6 +6,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- Bounded write-scope grammar (`devplane.scopes`): literal segments, `*` and `?` within a segment, and `**` only as the final segment, with exact membership and overlap decisions.
+- `devplane guard --policy <file>`: a Claude Code `PreToolUse` hook that blocks `Edit`, `Write`, `MultiEdit` and `NotebookEdit` calls outside an assignment's write scopes, outside its worktree (including through symlinks), or into governed roots. Every failure path exits with 2, the only code Claude Code treats as a block.
+- `python -m devplane` entry point.
+- Claude Code runtime option `writeGuard: true`: registers `devplane guard` as a per-assignment `PreToolUse` hook through `--settings`. The execution pipeline writes a per-assignment policy outside the worktree and fails the assignment, rather than running unguarded, if it cannot. Off by default; other adapters reject the option.
+
+### Changed
+
+- Parallel-batch overlap detection now uses exact scope overlap instead of a prefix approximation. Disjoint patterns such as `src/*.py` and `src/*.txt` are no longer reported as overlapping.
+- Execution plans express a trailing `dir/*` write scope as `dir/**`, preserving its reach over nested files.
+
+### Security
+
+- Post-run allowed-path checks no longer let `*` cross directory boundaries. A scope such as `src/*.py` previously accepted `src/nested/a.py` through `fnmatch`; it now rejects it. Saved plans that relied on that behavior fail closed.
+
 ## [0.3.0] - 2026-11-02
 
 ### Added

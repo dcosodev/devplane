@@ -55,6 +55,27 @@ options:
 
 Host and managed Claude Code policies remain authoritative. A denied or unavailable tool causes the assignment to fail rather than weakening permissions.
 
+### Write guard
+
+The write guard is a fail-fast aid, not a security boundary. Its purpose is to stop an out-of-scope file write at the first attempt, so an assignment does not spend a full run and a rejected commit to learn the same thing. The post-run allowed-path check is what enforces scopes for every adapter, whether or not a pre-execution hook exists. Isolating the host from the agent remains the user's and the runtime's responsibility.
+
+Set `writeGuard: true` to register `devplane guard` as a `PreToolUse` hook for each assignment session:
+
+```yaml
+options:
+  writeGuard: true
+```
+
+DevPlane writes a per-assignment policy (worktree root plus the assignment's write scopes) under `.git/devplane/runs/<run-id>/`, outside the worktree, and passes the hook to Claude Code with `--settings`. Before `Edit`, `Write`, `MultiEdit` or `NotebookEdit` runs, the guard denies targets that:
+
+- fall outside the assignment's write scopes;
+- resolve outside the worktree, including through symlinks;
+- are inside a governed root (`.agents`, `.claude`, `.devplane`, `.git`, `.hermes`, `.opencode`, `.specify`, `specs`), matched case-insensitively.
+
+Every failure path exits with code 2, the only code Claude Code treats as a block. If the policy cannot be written, the assignment fails instead of running unguarded. The option is off by default and only the Claude Code adapter accepts it.
+
+Limits: the guard does not govern shell commands, which can still write files; it does not run if hooks are disabled or restricted by user or managed Claude Code settings, or if the hook command cannot start (Claude Code treats that as a non-blocking error). The post-run allowed-path check therefore remains authoritative. Adapters without a guard lose only the early detection, not the enforcement.
+
 ## Codex
 
 The adapter uses non-interactive `codex exec` with the `workspace-write` sandbox. It does not bypass Codex's approvals or sandbox.

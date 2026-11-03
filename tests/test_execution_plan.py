@@ -326,3 +326,62 @@ def test_tasks_at_the_project_root_do_not_turn_every_path_into_a_read() -> None:
     )
 
     assert plan.assignments[0].allowed_paths == ("src/app.py",)
+
+
+def test_build_execution_plan_normalizes_trailing_star_to_directory_tree() -> None:
+    phases = parse_tasks_markdown(
+        "## Phase 3: User Story 1\n- [ ] T001 [US1] Add handlers under src/auth/*\n"
+    )
+
+    plan = build_execution_plan(
+        phases,
+        run_id="run-tree",
+        source_tasks="specs/001/tasks.md",
+        manifest_digest="sha256:manifest",
+        base_commit="abcdef0",
+        validation_commands=["pytest"],
+    )
+
+    assert plan.assignments[0].allowed_paths == ("src/auth/**",)
+
+
+def test_build_execution_plan_allows_disjoint_directory_scopes_in_parallel() -> None:
+    phases = parse_tasks_markdown(
+        "## Phase 3: User Story 1\n"
+        "- [ ] T001 [US1] Add handlers under src/auth/*\n"
+        "## Phase 4: User Story 2\n"
+        "- [ ] T002 [US2] Add handlers under src/billing/*\n"
+    )
+
+    plan = build_execution_plan(
+        phases,
+        run_id="run-disjoint",
+        source_tasks="specs/001/tasks.md",
+        manifest_digest="sha256:manifest",
+        base_commit="abcdef0",
+        validation_commands=["pytest"],
+    )
+
+    assert [item.allowed_paths for item in plan.assignments] == [
+        ("src/auth/**",),
+        ("src/billing/**",),
+    ]
+
+
+def test_build_execution_plan_rejects_file_inside_parallel_directory_scope() -> None:
+    phases = parse_tasks_markdown(
+        "## Phase 3: User Story 1\n"
+        "- [ ] T001 [US1] Add handlers under src/auth/*\n"
+        "## Phase 4: User Story 2\n"
+        "- [ ] T002 [US2] Tweak src/auth/models.py\n"
+    )
+
+    with pytest.raises(DevPlaneError, match="overlapping write scope"):
+        build_execution_plan(
+            phases,
+            run_id="run-inside",
+            source_tasks="specs/001/tasks.md",
+            manifest_digest="sha256:manifest",
+            base_commit="abcdef0",
+            validation_commands=["pytest"],
+        )

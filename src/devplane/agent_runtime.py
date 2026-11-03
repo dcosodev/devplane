@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import shlex
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +31,7 @@ class SessionRequest:
     task_id: str
     prompt: str
     cwd: Path
+    guard_policy: Path | None = None
 
 
 @dataclass
@@ -116,6 +120,34 @@ def _claude_permission_args(config: AgentRuntimeConfig) -> list[str]:
     return ["--permission-mode", permission_mode, "--allowedTools", tools]
 
 
+_GUARDED_TOOLS = "Edit|Write|MultiEdit|NotebookEdit"
+
+
+def _claude_guard_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[str]:
+    """Register ``devplane guard`` as a PreToolUse hook for this session."""
+    enabled = config.options.get("writeGuard", False)
+    if not isinstance(enabled, bool):
+        raise DevPlaneError("Claude runtime option writeGuard must be a boolean")
+    if not enabled:
+        return []
+    if request.guard_policy is None:
+        raise DevPlaneError("Claude write guard is enabled but this session has no guard policy")
+    command = shlex.join(
+        [sys.executable, "-m", "devplane", "guard", "--policy", str(request.guard_policy)]
+    )
+    settings = {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": _GUARDED_TOOLS,
+                    "hooks": [{"type": "command", "command": command}],
+                }
+            ]
+        }
+    }
+    return ["--settings", json.dumps(settings, sort_keys=True)]
+
+
 def _claude_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[str]:
     args = [
         config.executable,
@@ -124,6 +156,7 @@ def _claude_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[st
         "text",
         "--no-session-persistence",
         *_claude_permission_args(config),
+        *_claude_guard_args(request, config),
     ]
     if config.model:
         args.extend(["--model", config.model])
@@ -180,7 +213,7 @@ def _opencode_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[
 def build_agent_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[str]:
     allowed_options = {
         "hermes": {"toolsets", "maxTurns"},
-        "claude": {"permissionMode", "allowedTools"},
+        "claude": {"permissionMode", "allowedTools", "writeGuard"},
         "codex": {"sandbox"},
         "opencode": {"agent"},
     }

@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import uuid
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
@@ -25,6 +26,7 @@ from .execution_plan import (
     load_execution_plan,
     write_execution_plan,
 )
+from .guard import decide, load_policy
 from .parallel import run_parallel_implementation
 from .pipeline import (
     integrate_pipeline,
@@ -1291,3 +1293,40 @@ def resume(
         },
     )
     typer.echo(json.dumps(workflow_result, indent=2, sort_keys=True))
+
+
+_GUARD_INPUT_LIMIT = 1_048_576
+
+
+def _guard_verdict(policy_path: Path) -> str | None:
+    """Return a denial reason, or None when the hook event is allowed."""
+    try:
+        policy = load_policy(policy_path)
+        raw = sys.stdin.read(_GUARD_INPUT_LIMIT + 1)
+        if len(raw) > _GUARD_INPUT_LIMIT:
+            return "hook event exceeds the size limit"
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            return "hook event is not valid JSON"
+        decision = decide(policy, event)
+    except Exception as exc:  # noqa: BLE001 - a guard must fail closed on anything
+        return f"{type(exc).__name__}: {exc}"
+    return None if decision.allowed else decision.reason
+
+
+@app.command("guard")
+def guard_command(
+    policy: Annotated[
+        Path, typer.Option("--policy", help="Guard policy JSON written by DevPlane")
+    ],
+) -> None:
+    """Claude Code PreToolUse hook: read one event on stdin; exit 2 blocks the tool call.
+
+    Claude Code treats only exit code 2 as a block, so every failure path,
+    including unexpected errors, exits with 2.
+    """
+    reason = _guard_verdict(policy)
+    if reason is not None:
+        typer.echo(f"DevPlane guard: {reason}", err=True)
+        raise typer.Exit(2)
