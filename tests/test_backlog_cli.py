@@ -136,3 +136,107 @@ def test_status_changes_are_recorded_in_the_audit_log(tmp_path: Path) -> None:
     assert event["event"] == "backlog.status.changed"
     assert (event["story"], event["from"], event["to"]) == ("US-001", "backlog", "ready")
     assert event["recorded_at"]
+
+
+# ---------------------------------------------------------------------------
+# create and board
+# ---------------------------------------------------------------------------
+
+
+def test_create_writes_the_story_and_records_it(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        "create",
+        "--title",
+        "Función de suma",
+        "--priority",
+        "high",
+        "--write-scope",
+        "calc/add.py",
+        "--write-scope",
+        "tests/test_add.py",
+        "--validation",
+        "python3 -c pass",
+        "--body",
+        "Accept: add(1, 2) == 3",
+    )
+
+    assert result.exit_code == 0, result.output
+    created = json.loads(result.output)
+    assert created == {
+        "id": "US-001",
+        "path": "backlog/US-001-funcion-de-suma.md",
+        "status": "backlog",
+    }
+    shown = json.loads(_run(tmp_path, "show", "US-001").output)
+    assert shown["priority"] == "high"
+    assert shown["write_scope"] == ["calc/add.py", "tests/test_add.py"]
+    assert shown["validation"] == ["python3 -c pass"]
+    assert shown["body"].strip() == "Accept: add(1, 2) == 3"
+    event = [item for item in _audit(tmp_path) if item["event"] == "backlog.story.created"]
+    assert [(item["story"], item["status"]) for item in event] == [("US-001", "backlog")]
+
+
+def test_create_supports_dependencies_ready_status_and_a_body_file(tmp_path: Path) -> None:
+    assert _run(tmp_path, "create", "--title", "First").exit_code == 0
+    body = tmp_path / "body.md"
+    body.write_text("Long description\n\n- [ ] criterion\n", encoding="utf-8")
+
+    result = _run(
+        tmp_path,
+        "create",
+        "--title",
+        "Second",
+        "--status",
+        "ready",
+        "--write-scope",
+        "src/b.py",
+        "--depends-on",
+        "US-001",
+        "--body-file",
+        str(body),
+        "--feature",
+        "feature-1",
+    )
+
+    assert result.exit_code == 0, result.output
+    shown = json.loads(_run(tmp_path, "show", "US-002").output)
+    assert (shown["status"], shown["depends_on"], shown["feature"]) == ("ready", ["US-001"], "feature-1")
+    assert "criterion" in shown["body"]
+
+
+def test_create_rejects_invalid_input_without_writing_anything(tmp_path: Path) -> None:
+    result = _run(tmp_path, "create", "--title", "Bad", "--write-scope", "src/[ab]")
+
+    assert result.exit_code == 1
+    assert "scope" in result.output
+    assert not (tmp_path / "backlog").exists()
+
+
+def test_create_refuses_both_body_options_at_once(tmp_path: Path) -> None:
+    body = tmp_path / "body.md"
+    body.write_text("x", encoding="utf-8")
+
+    result = _run(tmp_path, "create", "--title", "T", "--body", "a", "--body-file", str(body))
+
+    assert result.exit_code == 1
+    assert "either" in result.output
+
+
+def test_board_renders_text_markdown_and_json(tmp_path: Path) -> None:
+    _write(tmp_path, "US-001", status="ready", scope="src/a.py")
+    _write(tmp_path, "US-002", status="done", scope="src/b.py")
+
+    text = _run(tmp_path, "board")
+    markdown = _run(tmp_path, "board", "--format", "markdown")
+    machine = _run(tmp_path, "board", "--format", "json")
+
+    assert text.exit_code == 0 and "READY (1)" in text.output and "— runs next" in text.output
+    assert "### Done (1)" in markdown.output
+    payload = json.loads(machine.output)
+    assert payload["next_batch"] == ["US-001"]
+    assert [card["id"] for card in payload["columns"]["done"]] == ["US-002"]
+
+
+def test_board_rejects_an_unknown_format(tmp_path: Path) -> None:
+    assert _run(tmp_path, "board", "--format", "html").exit_code == 1

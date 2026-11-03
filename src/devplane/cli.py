@@ -26,11 +26,13 @@ from .agent_runtime import (
 from .backlog import (
     STATUSES,
     Story,
+    create_story,
     load_backlog,
     plan_batches,
     ready_stories,
     set_status,
 )
+from .backlog_board import build_board, render_markdown, render_text
 from .backlog_run import (
     BACKLOG_SOURCE,
     NoReadyStories,
@@ -1544,6 +1546,82 @@ def backlog_status(
         },
     )
     _emit({"id": story.id, "status": story.status})
+
+
+_MAX_BODY_FILE_BYTES = 256 * 1024
+
+
+@backlog_app.command("create")
+def backlog_create(
+    title: Annotated[str, typer.Option("--title", help="One-line title")],
+    story_id: Annotated[str | None, typer.Option("--id", help="Explicit id; generated when omitted")] = None,
+    prefix: Annotated[str, typer.Option("--prefix", help="Prefix of generated ids")] = "US",
+    status: Annotated[str, typer.Option("--status", help="backlog (default) or ready")] = "backlog",
+    priority: Annotated[str, typer.Option("--priority", help="low, normal, high or urgent")] = "normal",
+    depends_on: Annotated[list[str] | None, typer.Option("--depends-on", help="Story id; repeat as needed")] = None,
+    write_scope: Annotated[list[str] | None, typer.Option("--write-scope", help="Allowed path or glob; repeat")] = None,
+    validation: Annotated[list[str] | None, typer.Option("--validation", help="Exact validation command; repeat")] = None,
+    feature: Annotated[str | None, typer.Option("--feature", help="Feature run id this story belongs to")] = None,
+    body: Annotated[str | None, typer.Option("--body", help="Markdown description")] = None,
+    body_file: Annotated[Path | None, typer.Option("--body-file", help="Read the Markdown description from a file")] = None,
+    project: _ProjectOption = Path("."),
+) -> None:
+    """Create a validated story file in backlog/ (not committed)."""
+    root = _project(project)
+    try:
+        if body is not None and body_file is not None:
+            raise DevPlaneError("pass either --body or --body-file, not both")
+        if body_file is not None:
+            source = body_file.expanduser()
+            if source.stat().st_size > _MAX_BODY_FILE_BYTES:
+                raise DevPlaneError(f"--body-file is larger than {_MAX_BODY_FILE_BYTES} bytes")
+            body = source.read_text(encoding="utf-8")
+        story = create_story(
+            root,
+            title=title,
+            story_id=story_id,
+            prefix=prefix,
+            status=status,
+            priority=priority,
+            depends_on=depends_on or (),
+            write_scope=write_scope or (),
+            validation=validation or (),
+            feature=feature,
+            body=body or "",
+        )
+    except (DevPlaneError, OSError, UnicodeError) as exc:
+        _fail(exc if isinstance(exc, DevPlaneError) else DevPlaneError(f"cannot create the story: {exc}"))
+    relative = story.path.relative_to(root).as_posix()
+    _append_audit(
+        root,
+        {
+            "event": "backlog.story.created",
+            "recorded_at": datetime.now(UTC).isoformat(),
+            "story": story.id,
+            "path": relative,
+            "status": story.status,
+        },
+    )
+    _emit({"id": story.id, "path": relative, "status": story.status})
+
+
+@backlog_app.command("board")
+def backlog_board(
+    output_format: Annotated[str, typer.Option("--format", help="text (default), markdown or json")] = "text",
+    max_parallel: Annotated[int, typer.Option("--max-parallel", min=1, max=8, help="Batch size used for the notes")] = 2,
+    project: _ProjectOption = Path("."),
+) -> None:
+    """Show the backlog as columns, with what the planner would do with each ready story."""
+    try:
+        if output_format not in {"text", "markdown", "json"}:
+            raise DevPlaneError(f"unknown board format: {output_format}")
+        board = build_board(load_backlog(_project(project)), max_parallel=max_parallel)
+    except DevPlaneError as exc:
+        _fail(exc)
+    if output_format == "json":
+        _emit(board)
+    else:
+        typer.echo((render_markdown if output_format == "markdown" else render_text)(board), nl=False)
 
 
 def _select_batch(project: Path, max_parallel: int):

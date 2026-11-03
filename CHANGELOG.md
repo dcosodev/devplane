@@ -6,6 +6,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- `devplane backlog create`: writes a validated story file with a generated id (`US-NNN`), a slug from the title and exclusive creation, so an existing file is never overwritten. It checks the new story against the whole backlog (unique id, known dependencies) and records `backlog.story.created` in the audit log.
+- `devplane backlog board`: the backlog as columns by status, with the planner's verdict on each ready story (runs next, queued in a later wave and why, deferred behind in-progress work, or waiting for dependencies) and the next batch. Output as text, Markdown tables or JSON.
+
 ## [0.4.0] - 2026-11-03
 
 ### Added

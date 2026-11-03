@@ -15,6 +15,8 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -386,3 +388,93 @@ def _write_atomic(path: Path, text: str) -> None:
     finally:
         if temporary_name is not None:
             Path(temporary_name).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# creating stories
+# ---------------------------------------------------------------------------
+
+_CREATABLE_STATUSES = ("backlog", "ready")
+_SLUG_LIMIT = 40
+
+
+def next_story_id(backlog: Backlog, prefix: str = "US") -> str:
+    """The next ``<prefix>-NNN`` id after the highest existing number for that prefix."""
+    numbers = [
+        int(match.group(1))
+        for story in backlog.stories
+        if (match := re.fullmatch(rf"{re.escape(prefix)}-(\d+)", story.id))
+    ]
+    return f"{prefix}-{max(numbers, default=0) + 1:03d}"
+
+
+def _slug(title: str) -> str:
+    ascii_title = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_title.lower()).strip("-")[:_SLUG_LIMIT].strip("-")
+    return slug or "story"
+
+
+def _render_story(fields: dict[str, Any], body: str) -> str:
+    front = yaml.safe_dump(fields, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    text = f"---\n{front}---\n"
+    return f"{text}\n{body.strip()}\n" if body.strip() else text
+
+
+def create_story(
+    project: Path,
+    *,
+    title: str,
+    story_id: str | None = None,
+    prefix: str = "US",
+    status: str = "backlog",
+    priority: str = "normal",
+    depends_on: Sequence[str] = (),
+    write_scope: Sequence[str] = (),
+    validation: Sequence[str] = (),
+    feature: str | None = None,
+    body: str = "",
+) -> Story:
+    """Write a new, fully validated story file and return it.
+
+    The story is checked exactly like a hand-written one, against the existing backlog
+    (unique id, known dependencies), before anything is written, and the file is created
+    exclusively so an existing file is never overwritten.
+    """
+    if not isinstance(title, str) or not title.strip() or "\n" in title or "\r" in title:
+        raise DevPlaneError("title must be a non-empty single line")
+    if status not in _CREATABLE_STATUSES:
+        raise DevPlaneError(f"a new story can only start as backlog or ready, not {status!r}: invalid status")
+    directory = project / BACKLOG_DIRECTORY
+    if directory.is_symlink():
+        raise _fail(directory, "a symlinked backlog directory is not allowed")
+    existing = load_backlog(project)
+    identifier = story_id or next_story_id(existing, prefix)
+    fields: dict[str, Any] = {
+        "id": identifier,
+        "title": title.strip(),
+        "status": status,
+        "priority": priority,
+    }
+    for key, value in (
+        ("depends_on", list(depends_on)),
+        ("write_scope", list(write_scope)),
+        ("validation", list(validation)),
+    ):
+        if value:
+            fields[key] = value
+    if feature is not None:
+        fields["feature"] = feature
+    path = directory / f"{identifier}-{_slug(title)}.md"
+    text = _render_story(fields, body)
+    story = _parse_text(text, path)
+    _check_graph((*existing.stories, story))
+    directory.mkdir(exist_ok=True)
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+    except FileExistsError as exc:
+        raise _fail(path, "a story file with this name already exists") from exc
+    except OSError as exc:
+        raise _fail(path, "cannot create the story file") from exc
+    return story
