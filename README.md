@@ -280,7 +280,7 @@ The test suite uses temporary repositories and fake agent runners. It does not r
 
 ## Project status
 
-`v0.3.0` is beta. It is in regular use and keeps changing as that use reveals bugs and new needs, so the catalog schema, runtime adapter API, and CLI may change before `1.0`.
+`v0.4.0` is beta. It is in regular use and keeps changing as that use reveals bugs and new needs, so the catalog schema, runtime adapter API, and CLI may change before `1.0`.
 
 Implemented now:
 
