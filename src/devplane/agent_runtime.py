@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import ast
 import json
+import os
+import re
 import shlex
 import subprocess
 import sys
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 from .core import SUPPORTED_ADAPTERS, DevPlaneError
+from .guard import HERMES_WRITE_TOOLS
 
 MIN_WORKERS = 1
 MAX_WORKERS = 8
@@ -45,7 +50,7 @@ class SessionResult:
 
 class CommandRunner(Protocol):
     def __call__(
-        self, args: list[str], cwd: Path
+        self, args: list[str], cwd: Path, *, environment: Mapping[str, str] | None = None
     ) -> subprocess.CompletedProcess[str]: ...
 
 
@@ -84,7 +89,27 @@ def list_adapters() -> list[str]:
     return list(SUPPORTED_ADAPTERS)
 
 
+GUARD_POLICY_ENV = "DEVPLANE_GUARD_POLICY"
+#: How each adapter can enforce a write scope: before a file is written, or only by the
+#: post-run allowed-path check that applies to every adapter.
+WRITE_GUARD_SUPPORT = {
+    "claude": "pre-execution",
+    "hermes": "pre-execution",
+    "codex": "post-run-only",
+    "opencode": "post-run-only",
+}
+
+
+def _hermes_guard_requested(config: AgentRuntimeConfig) -> bool:
+    value = config.options.get("writeGuard", False)
+    if not isinstance(value, bool):
+        raise DevPlaneError("Hermes runtime option writeGuard must be a boolean")
+    return value
+
+
 def _hermes_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[str]:
+    if _hermes_guard_requested(config) and request.guard_policy is None:
+        raise DevPlaneError("Hermes write guard is enabled but this session has no guard policy")
     args = [config.executable, "chat"]
     if config.provider:
         args.extend(["--provider", config.provider])
@@ -230,7 +255,7 @@ def _opencode_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[
 
 def build_agent_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[str]:
     allowed_options = {
-        "hermes": {"toolsets", "maxTurns"},
+        "hermes": {"toolsets", "maxTurns", "writeGuard"},
         "claude": {"permissionMode", "allowedTools", "writeGuard", "commitAttribution"},
         "codex": {"sandbox"},
         "opencode": {"agent"},
@@ -273,13 +298,108 @@ def _default_runner() -> CommandRunner:
     return run_checked
 
 
+def session_environment(
+    request: SessionRequest, config: AgentRuntimeConfig
+) -> dict[str, str] | None:
+    """The environment of a session that needs the guard policy, else ``None`` (inherit).
+
+    Hermes shell hooks are configured once, globally, and cannot be given arguments per
+    session, so the policy reaches the hook through the process environment.
+    """
+    if config.adapter != "hermes" or request.guard_policy is None:
+        return None
+    if not _hermes_guard_requested(config):
+        return None
+    return {**os.environ, GUARD_POLICY_ENV: str(request.guard_policy)}
+
+
+_HOOK_SECTION = re.compile(r"^\s*\[(?P<event>[A-Za-z_]+)\]\s*$")
+_HOOK_LINE = re.compile(
+    r"^\s*-\s+(?P<command>.+?)(?:\s+matcher=(?P<matcher>'[^']*'|\"[^\"]*\"))?"
+    r"\s+\(timeout=\d+s,\s*(?P<status>✓ allowed|✗ not allowlisted)\)\s*$"
+)
+_HERMES_HOOK_HELP = (
+    "install the hook in ~/.hermes/config.yaml (pre_tool_call, command "
+    "'<path to devplane> guard --hermes', matcher 'write_file|patch') and approve it; "
+    "see docs/runtime-adapters.md"
+)
+
+
+def _is_devplane_hermes_guard(command: str) -> bool:
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    return argv[-2:] == ["guard", "--hermes"] and any("devplane" in token for token in argv[:-2])
+
+
+def _matcher_covers(matcher: str | None, tool: str) -> bool:
+    if not matcher:
+        return True
+    try:
+        return re.fullmatch(matcher, tool) is not None
+    except re.error:
+        return matcher == tool
+
+
+def verify_write_guard_ready(
+    config: AgentRuntimeConfig, runner: CommandRunner | None = None
+) -> None:
+    """Refuse to run an unguarded Hermes session when a write guard was requested.
+
+    Hermes reads its hooks from its own global configuration, so DevPlane cannot register
+    the guard per session. It asks Hermes what is configured and approved instead, and
+    fails if the guard would not run, because Hermes lets a tool call proceed when a hook
+    does not run.
+    """
+    if config.adapter != "hermes" or not _hermes_guard_requested(config):
+        return
+    active_runner = runner or _default_runner()
+    try:
+        listing = active_runner([config.executable, "hooks", "list"], Path.cwd()).stdout or ""
+    except (DevPlaneError, OSError) as exc:
+        raise DevPlaneError(f"cannot check the Hermes write guard: {exc}") from exc
+    event = ""
+    found = False
+    for line in listing.splitlines():
+        section = _HOOK_SECTION.match(line)
+        if section:
+            event = section.group("event")
+            continue
+        entry = _HOOK_LINE.match(line)
+        if not entry or event != "pre_tool_call" or not _is_devplane_hermes_guard(entry.group("command")):
+            continue
+        found = True
+        if entry.group("status") != "✓ allowed":
+            raise DevPlaneError(
+                "the Hermes write guard hook is installed but not in Hermes' allowlist; "
+                "approve it once interactively (see docs/runtime-adapters.md)"
+            )
+        raw = entry.group("matcher")
+        matcher = ast.literal_eval(raw) if raw else None
+        for tool in sorted(HERMES_WRITE_TOOLS):
+            if not _matcher_covers(matcher, tool):
+                raise DevPlaneError(
+                    f"the Hermes write guard hook matcher {matcher!r} does not cover {tool}; "
+                    "use matcher 'write_file|patch'"
+                )
+    if not found:
+        raise DevPlaneError(f"the Hermes write guard hook is not installed: {_HERMES_HOOK_HELP}")
+
+
 def _run_one(
     request: SessionRequest,
     runtime: AgentRuntimeConfig,
     runner: CommandRunner,
 ) -> SessionResult:
     try:
-        completed = runner(build_agent_args(request, runtime), request.cwd)
+        args = build_agent_args(request, runtime)
+        environment = session_environment(request, runtime)
+        completed = (
+            runner(args, request.cwd, environment=environment)
+            if environment is not None
+            else runner(args, request.cwd)
+        )
     except DevPlaneError as exc:
         return SessionResult(request.task_id, 1, "", str(exc))
     except FileNotFoundError as exc:
@@ -328,6 +448,8 @@ def run_sessions(
 
 
 __all__ = [
+    "GUARD_POLICY_ENV",
+    "WRITE_GUARD_SUPPORT",
     "AgentRuntimeConfig",
     "SessionRequest",
     "SessionResult",
@@ -335,5 +457,7 @@ __all__ = [
     "list_adapters",
     "run_sessions",
     "runtime_from_manifest",
+    "session_environment",
     "speckit_phase_args",
+    "verify_write_guard_ready",
 ]

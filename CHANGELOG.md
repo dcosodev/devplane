@@ -8,6 +8,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
+- Hermes write guard: `devplane guard --hermes` speaks Hermes' `pre_tool_call` shell-hook protocol for `write_file` and `patch` (including multi-file patches). The `writeGuard` runtime option now also works for Hermes: DevPlane exports the per-assignment policy as `DEVPLANE_GUARD_POLICY` and, before launching any agent, checks with `hermes hooks list` that the hook is installed, approved and covers both tools. Hermes keeps its hooks in its own global configuration, so you install the hook once and DevPlane never edits it.
+- `devplane adapters` reports `write_guard` (`pre-execution` or `post-run-only`) for every adapter.
 - `devplane backlog run --batches N --integrate`: runs up to N waves in sequence, integrating each completed wave before planning the next, and stops at the first failed wave or integration, when no story is ready, or at the limit. Chaining requires `--integrate` because each wave builds on the integrated result of the previous one. `devplane integrate` and `backlog run` now share the same integration code.
 - Audit events for the backlog: `backlog.status.changed` when `devplane backlog status` moves a story and `backlog.review.recorded` when `integrate` moves integrated stories to `review`, alongside the existing `backlog.run.started`.
 - Bounded write-scope grammar (`devplane.scopes`): literal segments, `*` and `?` within a segment, and `**` only as the final segment, with exact membership and overlap decisions.
