@@ -24,6 +24,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
+- Untracked files that validation commands leave in a DevPlane worktree, such as `__pycache__/`, no longer make a run report `completed` and then fail `integrate` with "pipeline final worktree must be clean". DevPlane removes untracked, non-ignored files from the assignment, integration and gate worktrees after validation. Tracked files are never touched, so a validation that edits tracked files is still refused, and the cleanup refuses any directory that is not a worktree root.
 - `devplane retry` now exits with status 1 when the retried run is not `completed`, like `implement`; it used to exit 0 for a failed run.
 
 ### Security

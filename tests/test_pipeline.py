@@ -535,3 +535,93 @@ def test_execution_pipeline_never_runs_an_agent_unguarded_when_the_policy_cannot
     assert launched == []
     assert result.assignments[0].status == "failed"
     assert "cannot write guard policy" in (result.assignments[0].error or "")
+
+
+BYPRODUCT = "python3 -c \"open('byproduct.txt', 'w').write('x')\""
+
+
+def _commit_session(path_by_assignment: dict[str, str]):
+    def sessions_fn(requests, max_workers, runner=None):
+        results = []
+        for request in requests:
+            target = request.cwd / path_by_assignment[request.task_id]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("ok\n", encoding="utf-8")
+            run_checked(["git", "add", target.relative_to(request.cwd).as_posix()], request.cwd)
+            run_checked(["git", "commit", "-m", f"test: {request.task_id}"], request.cwd)
+            results.append(SessionResult(request.task_id, 0, "completed", None))
+        return results
+
+    return sessions_fn
+
+
+def _plan_for(project_base: str, tasks: str, run_id: str, validation: str):
+    return build_execution_plan(
+        parse_tasks_markdown(tasks),
+        run_id=run_id,
+        source_tasks="tasks.md",
+        manifest_digest="sha256:manifest",
+        base_commit=project_base,
+        validation_commands=[validation],
+    )
+
+
+def test_untracked_validation_byproducts_do_not_block_a_single_assignment(tmp_path: Path) -> None:
+    tasks = "## Phase 1: Setup\n- [ ] T001 Create src/service.py\n"
+    project, base = _git_project(tmp_path, tasks)
+    plan = _plan_for(base, tasks, "byproduct-single", BYPRODUCT)
+    paths = {item.assignment_id: item.allowed_paths[0] for item in plan.assignments}
+
+    result = run_execution_pipeline(
+        project, plan, max_agents=1, sessions_fn=_commit_session(paths), command_runner=run_checked
+    )
+
+    assert result.status == "completed"
+    assert run_checked(["git", "status", "--porcelain"], Path(result.final_worktree)).stdout == ""
+    assert integrate_pipeline(project, plan, result, command_runner=run_checked) == result.final_commit
+    cleanup = plan_worktree_cleanup(project, plan.run_id)
+    assert cleanup.preserved_branches == ()
+
+
+def test_untracked_validation_byproducts_do_not_block_a_parallel_batch(tmp_path: Path) -> None:
+    project, base = _git_project(tmp_path)
+    plan = _plan_for(base, TASKS, "byproduct-parallel", BYPRODUCT)
+    paths = {item.assignment_id: item.allowed_paths[0] for item in plan.assignments}
+
+    result = run_execution_pipeline(
+        project, plan, max_agents=2, sessions_fn=_commit_session(paths), command_runner=run_checked
+    )
+
+    assert result.status == "completed"
+    assert run_checked(["git", "status", "--porcelain"], Path(result.final_worktree)).stdout == ""
+    assert integrate_pipeline(project, plan, result, command_runner=run_checked) == result.final_commit
+    assert plan_worktree_cleanup(project, plan.run_id).preserved_branches == ()
+
+
+def test_a_validation_that_edits_tracked_files_still_blocks_integration(tmp_path: Path) -> None:
+    tasks = "## Phase 1: Setup\n- [ ] T001 Create src/service.py\n"
+    project, base = _git_project(tmp_path, tasks)
+    mutate = "python3 -c \"open('src/service.py', 'a').write('mutated')\""
+    plan = _plan_for(base, tasks, "byproduct-tracked", mutate)
+    paths = {item.assignment_id: item.allowed_paths[0] for item in plan.assignments}
+    result = run_execution_pipeline(
+        project, plan, max_agents=1, sessions_fn=_commit_session(paths), command_runner=run_checked
+    )
+
+    with pytest.raises(DevPlaneError, match="must be clean"):
+        integrate_pipeline(project, plan, result, command_runner=run_checked)
+
+
+def test_validation_cleanup_refuses_a_directory_that_is_not_a_worktree_root(tmp_path: Path) -> None:
+    from devplane.pipeline import _run_validation
+
+    project, _ = _git_project(tmp_path)
+    keep = project / "keep.txt"
+    keep.write_text("untracked and precious\n", encoding="utf-8")
+    inner = project / "sub"
+    inner.mkdir()
+
+    with pytest.raises(DevPlaneError, match="worktree root"):
+        _run_validation((), inner, run_checked)
+
+    assert keep.read_text(encoding="utf-8") == "untracked and precious\n"
