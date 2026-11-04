@@ -385,3 +385,27 @@ def test_build_execution_plan_rejects_file_inside_parallel_directory_scope() -> 
             base_commit="abcdef0",
             validation_commands=["pytest"],
         )
+
+
+def test_setup_phase_that_only_runs_checks_has_no_write_scope() -> None:
+    plan = _plan_from(
+        "## Phase 1: Setup\n"
+        "- [ ] T001 Run baseline `python3 -m unittest discover -s tests -t .` and confirm it passes\n"
+        "## Phase 2: Story\n"
+        "- [ ] T002 Implement src/app.py\n"
+    )
+
+    setup, story = plan.assignments
+    assert setup.allowed_paths == ()
+    assert setup.allow_empty_commit is True
+    assert story.allowed_paths == ("src/app.py",)
+    assert story.allow_empty_commit is False
+
+
+def test_phase_mixing_checks_and_unbounded_work_is_still_rejected() -> None:
+    with pytest.raises(DevPlaneError, match="no writable paths"):
+        _plan_from(
+            "## Phase 1: Setup\n"
+            "- [ ] T001 Run baseline tests\n"
+            "- [ ] T002 Refactor the whole module\n"
+        )

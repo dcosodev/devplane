@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+
+- A phase of `tasks.md` whose tasks only run or verify something (for example a Spec Kit "Setup" phase that says "Run baseline tests") no longer fails `checkpoint` and `plan-execution` with "no writable paths". It becomes an assignment with no write scope that is allowed to produce no commit. A phase that mixes checks with work that names no file is still rejected. Found running a real Spec Kit feature end to end.
+
 ## [0.5.0] - 2026-11-04
 
 ### Added
