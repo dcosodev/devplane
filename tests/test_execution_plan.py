@@ -113,7 +113,7 @@ def test_build_execution_plan_ignores_arithmetic_multiplication_as_a_path() -> N
     )
 
 
-def test_build_execution_plan_rejects_overlapping_parallel_scopes() -> None:
+def test_overlapping_story_phases_run_one_after_another() -> None:
     phases = parse_tasks_markdown(
         "## Phase 3: User Story 1\n"
         "- [ ] T001 [US1] Modify service in src/service.py\n"
@@ -121,15 +121,19 @@ def test_build_execution_plan_rejects_overlapping_parallel_scopes() -> None:
         "- [ ] T002 [US2] Also modify service in src/service.py\n"
     )
 
-    with pytest.raises(DevPlaneError, match="overlapping write scope"):
-        build_execution_plan(
-            phases,
-            run_id="run-123",
-            source_tasks="specs/001/tasks.md",
-            manifest_digest="sha256:manifest",
-            base_commit="abcdef0",
-            validation_commands=["pytest"],
-        )
+    plan = build_execution_plan(
+        phases,
+        run_id="run-123",
+        source_tasks="specs/001/tasks.md",
+        manifest_digest="sha256:manifest",
+        base_commit="abcdef0",
+        validation_commands=["pytest"],
+    )
+
+    first, second = plan.assignments
+    assert (first.mode, second.mode) == ("serial", "serial")
+    assert first.depends_on == ()
+    assert second.depends_on == (first.assignment_id,)
 
 
 def test_build_execution_plan_rejects_tasks_without_file_boundaries() -> None:
@@ -368,7 +372,7 @@ def test_build_execution_plan_allows_disjoint_directory_scopes_in_parallel() -> 
     ]
 
 
-def test_build_execution_plan_rejects_file_inside_parallel_directory_scope() -> None:
+def test_file_inside_a_sibling_directory_scope_runs_after_it() -> None:
     phases = parse_tasks_markdown(
         "## Phase 3: User Story 1\n"
         "- [ ] T001 [US1] Add handlers under src/auth/*\n"
@@ -376,15 +380,19 @@ def test_build_execution_plan_rejects_file_inside_parallel_directory_scope() -> 
         "- [ ] T002 [US2] Tweak src/auth/models.py\n"
     )
 
-    with pytest.raises(DevPlaneError, match="overlapping write scope"):
-        build_execution_plan(
-            phases,
-            run_id="run-inside",
-            source_tasks="specs/001/tasks.md",
-            manifest_digest="sha256:manifest",
-            base_commit="abcdef0",
-            validation_commands=["pytest"],
-        )
+    plan = build_execution_plan(
+        phases,
+        run_id="run-inside",
+        source_tasks="specs/001/tasks.md",
+        manifest_digest="sha256:manifest",
+        base_commit="abcdef0",
+        validation_commands=["pytest"],
+    )
+
+    first, second = plan.assignments
+    assert (first.mode, second.mode) == ("serial", "serial")
+    assert first.depends_on == ()
+    assert second.depends_on == (first.assignment_id,)
 
 
 def test_setup_phase_that_only_runs_checks_has_no_write_scope() -> None:
@@ -409,3 +417,25 @@ def test_phase_mixing_checks_and_unbounded_work_is_still_rejected() -> None:
             "- [ ] T001 Run baseline tests\n"
             "- [ ] T002 Refactor the whole module\n"
         )
+
+
+def test_story_phases_are_split_into_the_fewest_ordered_waves() -> None:
+    plan = _plan_from(
+        "## Phase 3: User Story 1\n- [ ] T001 [US1] Edit src/a.py\n"
+        "## Phase 4: User Story 2\n- [ ] T002 [US2] Edit src/a.py\n"
+        "## Phase 5: User Story 3\n- [ ] T003 [US3] Edit src/b.py\n"
+    )
+
+    one, two, three = plan.assignments
+    assert (one.mode, two.mode, three.mode) == ("serial", "parallel", "parallel")
+    assert two.depends_on == (one.assignment_id,)
+    assert three.depends_on == (one.assignment_id,)
+
+
+def test_disjoint_story_phases_still_run_in_parallel() -> None:
+    plan = _plan_from(
+        "## Phase 3: User Story 1\n- [ ] T001 [US1] Edit src/a.py\n"
+        "## Phase 4: User Story 2\n- [ ] T002 [US2] Edit src/b.py\n"
+    )
+
+    assert [item.mode for item in plan.assignments] == ["parallel", "parallel"]
