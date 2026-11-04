@@ -12,6 +12,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
+- A Polish phase whose tasks only review or re-run things ("Walk through …", "Final full run …", "Review …") may finish without a commit, like Foundational and Validation phases already could. Before, an agent that found nothing to change failed the run with "agent session completed without a valid commit". A Polish phase with real work, such as "Update documentation", still needs its commit.
 - A phase of `tasks.md` whose tasks only run or verify something (for example a Spec Kit "Setup" phase that says "Run baseline tests") no longer fails `checkpoint` and `plan-execution` with "no writable paths". It becomes an assignment with no write scope that is allowed to produce no commit. A phase that mixes checks with work that names no file is still rejected. Found running a real Spec Kit feature end to end.
 
 ## [0.5.0] - 2026-11-04
