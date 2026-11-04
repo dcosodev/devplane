@@ -173,7 +173,7 @@ def _paths_for_phase(phase: TaskPhase, feature_dir: PurePosixPath) -> tuple[str,
     return tuple(sorted(paths))
 
 
-_CHECK_VERBS = re.compile(r"^(?:verify|validate|run|confirm|check)\b", re.IGNORECASE)
+_CHECK_VERBS = re.compile(r"^(?:verify|validate|run|re-?run|confirm|check|review|walk through|final)\b", re.IGNORECASE)
 
 
 def _only_runs_checks(phase: TaskPhase) -> bool:
@@ -185,7 +185,7 @@ def _only_runs_checks(phase: TaskPhase) -> bool:
 
 def _allows_empty_commit(phase: TaskPhase) -> bool:
     phase_name = phase.name.casefold()
-    if "foundational" not in phase_name and "validation" not in phase_name:
+    if not any(word in phase_name for word in ("foundational", "validation", "polish")):
         return False
     return _only_runs_checks(phase)
 

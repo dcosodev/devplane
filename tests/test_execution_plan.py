@@ -439,3 +439,16 @@ def test_disjoint_story_phases_still_run_in_parallel() -> None:
     )
 
     assert [item.mode for item in plan.assignments] == ["parallel", "parallel"]
+
+
+def test_polish_phase_that_reviews_work_may_leave_no_commit() -> None:
+    plan = _plan_from(
+        "## Phase 3: User Story 1\n- [ ] T001 [US1] Edit src/a.py\n"
+        "## Phase 4: Polish\n"
+        "- [ ] T002 Walk through the scenarios and add any missing case in tests/test_a.py\n"
+    )
+
+    story, polish = plan.assignments
+    assert polish.allowed_paths == ("tests/test_a.py",)
+    assert polish.allow_empty_commit is True
+    assert story.allow_empty_commit is False
