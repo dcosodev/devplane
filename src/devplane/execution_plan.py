@@ -166,21 +166,28 @@ def _paths_for_phase(phase: TaskPhase, feature_dir: PurePosixPath) -> tuple[str,
                 unsafe_candidates.append(candidate)
     if unsafe_candidates:
         raise DevPlaneError(f"unsafe write scope: {unsafe_candidates[0]!r}")
-    if not paths and not reads_approved_artifact:
+    if not paths and not reads_approved_artifact and not _only_runs_checks(phase):
         raise DevPlaneError(
             f"phase {phase.name!r} has no writable paths; every assignment requires explicit file boundaries"
         )
     return tuple(sorted(paths))
 
 
+_CHECK_VERBS = re.compile(r"^(?:verify|validate|run|confirm|check)\b", re.IGNORECASE)
+
+
+def _only_runs_checks(phase: TaskPhase) -> bool:
+    """True when every task of the phase only verifies something, so it writes nothing."""
+    return bool(phase.tasks) and all(
+        _CHECK_VERBS.match(task.description.strip()) for task in phase.tasks
+    )
+
+
 def _allows_empty_commit(phase: TaskPhase) -> bool:
     phase_name = phase.name.casefold()
     if "foundational" not in phase_name and "validation" not in phase_name:
         return False
-    validation_verbs = re.compile(r"^(?:verify|validate|run|confirm|check)\b", re.IGNORECASE)
-    return bool(phase.tasks) and all(
-        validation_verbs.match(task.description.strip()) for task in phase.tasks
-    )
+    return _only_runs_checks(phase)
 
 
 def _validate_parallel_scopes(assignments: list[ExecutionAssignment]) -> None:
