@@ -223,6 +223,24 @@ def compute_tasks_digest(phases: list[TaskPhase]) -> str:
     return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
 
 
+def _split_into_disjoint_waves(
+    scoped: list[tuple[TaskPhase, tuple[str, ...]]],
+) -> list[list[tuple[TaskPhase, tuple[str, ...]]]]:
+    """Split ordered phases into consecutive waves whose write scopes are pairwise disjoint."""
+    waves: list[list[tuple[TaskPhase, tuple[str, ...]]]] = []
+    for item in scoped:
+        if waves and not any(
+            scopes_overlap(mine, theirs)
+            for _, theirs_paths in waves[-1]
+            for theirs in theirs_paths
+            for mine in item[1]
+        ):
+            waves[-1].append(item)
+        else:
+            waves.append([item])
+    return waves
+
+
 def build_execution_plan(
     phases: list[TaskPhase],
     *,
@@ -251,26 +269,31 @@ def build_execution_plan(
     previous_batch: tuple[str, ...] = ()
 
     for batch in build_execution_batches(phases):
-        batch_assignments: list[ExecutionAssignment] = []
-        mode = "parallel" if len(batch) > 1 else "serial"
-        for phase in batch:
-            task_ids = tuple(task.task_id for task in phase.tasks)
-            allowed_paths = _paths_for_phase(phase, PurePosixPath(source_tasks).parent)
-            assignment = ExecutionAssignment(
-                assignment_id=phase_ids[id(phase)],
-                phase=phase.name,
-                mode=mode,
-                tasks=task_ids,
-                depends_on=previous_batch,
-                allowed_paths=allowed_paths,
-                validation=tuple(command.strip() for command in validation_commands),
-                allow_empty_commit=not allowed_paths or _allows_empty_commit(phase),
-            )
-            batch_assignments.append(assignment)
-        if len(batch_assignments) > 1:
-            _validate_parallel_scopes(batch_assignments)
-        assignments.extend(batch_assignments)
-        previous_batch = tuple(item.assignment_id for item in batch_assignments)
+        scoped = [
+            (phase, _paths_for_phase(phase, PurePosixPath(source_tasks).parent)) for phase in batch
+        ]
+        # Phases whose write scopes overlap cannot run side by side: run them one
+        # wave after another, in order, instead of rejecting the whole plan.
+        for wave in _split_into_disjoint_waves(scoped):
+            wave_assignments: list[ExecutionAssignment] = []
+            mode = "parallel" if len(wave) > 1 else "serial"
+            for phase, allowed_paths in wave:
+                wave_assignments.append(
+                    ExecutionAssignment(
+                        assignment_id=phase_ids[id(phase)],
+                        phase=phase.name,
+                        mode=mode,
+                        tasks=tuple(task.task_id for task in phase.tasks),
+                        depends_on=previous_batch,
+                        allowed_paths=allowed_paths,
+                        validation=tuple(command.strip() for command in validation_commands),
+                        allow_empty_commit=not allowed_paths or _allows_empty_commit(phase),
+                    )
+                )
+            if len(wave_assignments) > 1:
+                _validate_parallel_scopes(wave_assignments)
+            assignments.extend(wave_assignments)
+            previous_batch = tuple(item.assignment_id for item in wave_assignments)
 
     return ExecutionPlan(
         run_id=run_id,
