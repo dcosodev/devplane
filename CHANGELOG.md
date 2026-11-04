@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-04
+
 ### Added
 
 - `devplane backlog specify <id>`: starts the governed Spec Kit flow for a story. Its title and body become the feature description, the `specify` phase runs through the same code as `devplane run --stop-after tasks`, and the story is linked to the feature run in a commit of its own that contains only the story file. If the phase fails nothing is linked. Integrating the feature later moves its linked `ready` and `in_progress` stories to `review`.
@@ -135,7 +137,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Rejects path and symlink escapes, malformed Git identifiers, execution-plan drift, out-of-scope writes, governance changes, dirty worktrees, and changed integration bases.
 - Uses safe YAML loading, argument-array subprocesses with `shell=False`, non-interactive child processes, and digest-only handling for private feature descriptions.
 
-[Unreleased]: https://github.com/dcosodev/devplane/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/dcosodev/devplane/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/dcosodev/devplane/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/dcosodev/devplane/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/dcosodev/devplane/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/dcosodev/devplane/compare/v0.2.1...v0.2.2
