@@ -6,7 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- Token and cost capture for Claude Code sessions. `implement` and `backlog run` now read Claude Code's JSON output and record, per assignment, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens` and `cost_usd` in `result.json` and in the `pipeline.assignment` audit events, and print a `usage_total` for the run. Only Claude Code reports usage; other adapters record none. The Spec Kit phases (`specify`, `plan`, `tasks`) run inside the `specify` CLI and are not measured.
+
 ### Changed
+
+- The Claude adapter runs with `--output-format json` instead of `text`; the reply text is unchanged, and unexpected output is kept as is.
+- Integrating a Spec Kit feature now also moves the `backlog` stories linked to it (`backlog specify` on a story that is not `ready`) to `review`. A story without `write_scope` takes the paths the feature run was allowed to write.
 
 - **Behavior change:** user-story phases of an approved `tasks.md` whose write scopes overlap (typically two stories that both edit one module) no longer make `plan-execution` and `checkpoint` fail with "overlapping write scope". They are planned as consecutive waves, in task order, each depending on the previous one; phases with disjoint scopes still run in parallel. Found running a real Spec Kit feature end to end.
 

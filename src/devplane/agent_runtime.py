@@ -46,6 +46,7 @@ class SessionResult:
     stdout: str
     error: str | None
     stderr: str = ""
+    usage: dict[str, float] | None = None
 
 
 class CommandRunner(Protocol):
@@ -196,7 +197,7 @@ def _claude_args(request: SessionRequest, config: AgentRuntimeConfig) -> list[st
         config.executable,
         "--print",
         "--output-format",
-        "text",
+        "json",
         "--no-session-persistence",
         *_claude_permission_args(config),
         *_claude_settings_args(request, config),
@@ -387,6 +388,41 @@ def verify_write_guard_ready(
         raise DevPlaneError(f"the Hermes write guard hook is not installed: {_HERMES_HOOK_HELP}")
 
 
+_USAGE_FIELDS = (
+    ("input_tokens", "input_tokens"),
+    ("output_tokens", "output_tokens"),
+    ("cache_read_input_tokens", "cache_read_tokens"),
+    ("cache_creation_input_tokens", "cache_creation_tokens"),
+)
+
+
+def _split_claude_json(stdout: str) -> tuple[str, dict[str, float] | None]:
+    """Split Claude Code's ``--output-format json`` into the reply text and its usage.
+
+    Anything that is not the expected JSON object is returned untouched with no usage,
+    so an unexpected output never hides what the agent said.
+    """
+    try:
+        data = json.loads(stdout)
+    except ValueError:
+        return stdout, None
+    if not isinstance(data, dict):
+        return stdout, None
+    text = data.get("result")
+    reply = text if isinstance(text, str) else stdout
+    raw = data.get("usage")
+    usage: dict[str, float] = {}
+    if isinstance(raw, dict):
+        for source, target in _USAGE_FIELDS:
+            value = raw.get(source)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                usage[target] = value
+    cost = data.get("total_cost_usd")
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost >= 0:
+        usage["cost_usd"] = round(float(cost), 6)
+    return reply, usage or None
+
+
 def _run_one(
     request: SessionRequest,
     runtime: AgentRuntimeConfig,
@@ -416,12 +452,17 @@ def _run_one(
             "",
             f"unexpected runner error: {type(exc).__name__}",
         )
+    stdout = completed.stdout or ""
+    usage = None
+    if runtime.adapter == "claude":
+        stdout, usage = _split_claude_json(stdout)
     return SessionResult(
         request.task_id,
         completed.returncode,
-        completed.stdout or "",
+        stdout,
         None,
         completed.stderr or "",
+        usage,
     )
 
 

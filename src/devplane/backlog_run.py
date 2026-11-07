@@ -24,7 +24,14 @@ from pathlib import Path
 
 import yaml
 
-from .backlog import BACKLOG_DIRECTORY, Story, load_backlog, set_feature, set_status
+from .backlog import (
+    BACKLOG_DIRECTORY,
+    Story,
+    load_backlog,
+    record_feature_review,
+    set_feature,
+    set_status,
+)
 from .commands import describe_dirty, run_checked
 from .core import DevPlaneError
 from .execution_plan import (
@@ -206,27 +213,29 @@ def link_story_to_feature(project: Path, story_id: str, feature: str) -> None:
     )
 
 
-def mark_feature_stories_review(project: Path, feature: str) -> list[str]:
+def mark_feature_stories_review(
+    project: Path, feature: str, scope: Sequence[str] = ()
+) -> list[str]:
     """After a feature run is integrated, move the stories linked to it to ``review``.
 
-    Only ``ready`` and ``in_progress`` stories move (a ``ready`` one passes through
-    ``in_progress``, since the feature was implemented); anything else is left alone.
+    ``backlog``, ``ready`` and ``in_progress`` stories move, since the feature was
+    implemented; a story without ``write_scope`` takes ``scope``, the paths the feature
+    run was allowed to write. Anything else is left alone.
     """
     project = project.expanduser().resolve()
     linked = [
         story
         for story in load_backlog(project).stories
-        if story.feature == feature and story.status in ("ready", "in_progress")
+        if story.feature == feature and story.status in ("backlog", "ready", "in_progress")
     ]
     if not linked:
         return []
     _require_clean(project, "recording the integrated stories")
-
-    def edit(story: Story) -> None:
-        if story.status == "ready":
-            set_status(project, story.id, "in_progress")
-        set_status(project, story.id, "review")
-
     ids = ", ".join(story.id for story in linked)
-    _commit_edit(project, linked, edit, f"chore(backlog): ready for review {ids} (feature {feature})")
+    _commit_edit(
+        project,
+        linked,
+        lambda story: record_feature_review(project, story.id, scope),
+        f"chore(backlog): ready for review {ids} (feature {feature})",
+    )
     return [story.id for story in linked]

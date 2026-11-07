@@ -28,7 +28,7 @@ def _story(
     story_id: str,
     *,
     status: str = "ready",
-    scope: str = "src/a.py",
+    scope: str | None = "src/a.py",
     title: str | None = None,
     body: str = "Do the thing.\n",
     depends_on: str = "[]",
@@ -42,7 +42,7 @@ def _story(
     extra += f"feature: {feature}\n" if feature is not None else ""
     path.write_text(
         f"---\nid: {story_id}\ntitle: {title or 'Story ' + story_id}\nstatus: {status}\n"
-        f"depends_on: {depends_on}\nwrite_scope: ['{scope}']\n{extra}---\n{body}",
+        f"depends_on: {depends_on}\nwrite_scope: {[scope] if scope else []}\n{extra}---\n{body}",
         encoding="utf-8",
     )
     return path
@@ -453,24 +453,27 @@ def test_integrating_a_feature_moves_its_linked_stories_to_review(tmp_path: Path
     project = _git_project(tmp_path)
     _story(project, "US-001", status="in_progress", scope="src/a.py", feature="run-x")
     _story(project, "US-002", status="ready", scope="src/b.py", feature="run-x")
-    _story(project, "US-003", status="backlog", feature="run-x")
+    _story(project, "US-003", status="backlog", scope=None, feature="run-x")
     _story(project, "US-004", status="in_progress", scope="src/d.py", feature="run-y")
     _story(project, "US-005", status="in_progress", scope="src/e.py")
     _commit_all(project)
 
-    moved = mark_feature_stories_review(project, "run-x")
+    moved = mark_feature_stories_review(project, "run-x", ["src/c.py"])
 
-    assert moved == ["US-001", "US-002"]
+    assert moved == ["US-001", "US-002", "US-003"]
     statuses = {story.id: story.status for story in load_backlog(project).stories}
     assert statuses == {
         "US-001": "review",
         "US-002": "review",
-        "US-003": "backlog",
+        "US-003": "review",
         "US-004": "in_progress",
         "US-005": "in_progress",
     }
+    stories = {story.id: story for story in load_backlog(project).stories}
+    assert stories["US-003"].write_scope == ("src/c.py",)  # taken from the feature run
+    assert stories["US-001"].write_scope == ("src/a.py",)  # an existing scope is kept
     subject = run_checked(["git", "log", "-1", "--format=%s"], project).stdout.strip()
-    assert subject == "chore(backlog): ready for review US-001, US-002 (feature run-x)"
+    assert subject == "chore(backlog): ready for review US-001, US-002, US-003 (feature run-x)"
     assert run_checked(["git", "status", "--porcelain"], project).stdout == ""
 
 
@@ -487,3 +490,16 @@ def test_a_project_without_a_backlog_has_nothing_to_move(tmp_path: Path) -> None
     project = _git_project(tmp_path)
 
     assert mark_feature_stories_review(project, "run-x") == []
+
+
+def test_a_backlog_story_without_scope_needs_the_feature_scope(tmp_path: Path) -> None:
+    project = _git_project(tmp_path)
+    _story(project, "US-001", status="backlog", scope=None, feature="run-x")
+    head = _commit_all(project)
+
+    with pytest.raises(DevPlaneError, match="no write_scope"):
+        mark_feature_stories_review(project, "run-x")
+
+    assert _stories(project, "US-001")[0].status == "backlog"
+    assert run_checked(["git", "rev-parse", "HEAD"], project).stdout.strip() == head
+    assert run_checked(["git", "status", "--porcelain"], project).stdout == ""

@@ -392,6 +392,31 @@ def set_feature(project: Path, story_id: str, feature: str) -> Story:
     return result
 
 
+def record_feature_review(project: Path, story_id: str, scope: Sequence[str]) -> Story:
+    """Move a story to ``review`` after its feature was integrated, skipping ``ready``.
+
+    A story specified straight from ``backlog`` may have no ``write_scope``; it takes the
+    paths the feature run was allowed to write, which is what the work actually touched.
+    """
+    story = load_backlog(project).get(story_id)
+    if story.status not in ("backlog", "ready", "in_progress"):
+        raise DevPlaneError(f"cannot record a feature review from {story.status}")
+    text = story.path.read_text(encoding="utf-8")
+    match = _FRONTMATTER.match(text)
+    if match is None:  # pragma: no cover - load_backlog already parsed this file
+        raise _fail(story.path, "story has no frontmatter block")
+    front = _STATUS_LINE.sub("status: review", match.group("front"), count=1)
+    if not story.write_scope:
+        if not scope:
+            raise DevPlaneError(f"{story_id} has no write_scope and the feature run has none")
+        block = yaml.safe_dump({"write_scope": list(scope)}, sort_keys=False).rstrip("\n")
+        front = f"{front}\n{block}"
+    updated = text[: match.start("front")] + front + text[match.end("front") :]
+    result = _parse_text(updated, story.path)  # never leave an invalid story on disk
+    _write_atomic(story.path, updated)
+    return result
+
+
 def _write_atomic(path: Path, text: str) -> None:
     temporary_name: str | None = None
     try:

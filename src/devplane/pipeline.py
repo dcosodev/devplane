@@ -38,6 +38,7 @@ class AssignmentRun:
     changed_paths: tuple[str, ...] = ()
     output_digest: str | None = None
     error: str | None = None
+    usage: dict[str, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,17 @@ class PipelineRun:
     final_branch: str | None
     final_worktree: str | None
     assignments: tuple[AssignmentRun, ...]
+
+
+def total_usage(runs: tuple[AssignmentRun, ...]) -> dict[str, float] | None:
+    """Add up the usage of the assignments that reported any; ``None`` if none did."""
+    total: dict[str, float] = {}
+    for run in runs:
+        for key, value in (run.usage or {}).items():
+            total[key] = total.get(key, 0) + value
+    if "cost_usd" in total:
+        total["cost_usd"] = round(total["cost_usd"], 6)
+    return total or None
 
 
 def write_pipeline_run(result: PipelineRun, path: Path) -> None:
@@ -78,6 +90,17 @@ def load_pipeline_run(path: Path) -> PipelineRun:
         commit = row.get("commit")
         if commit is not None and (not isinstance(commit, str) or not _SAFE_COMMIT.fullmatch(commit)):
             raise DevPlaneError("invalid assignment commit in pipeline result")
+        usage = row.get("usage")
+        if usage is not None and (
+            not isinstance(usage, dict)
+            or not all(
+                isinstance(key, str)
+                and isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                for key, value in usage.items()
+            )
+        ):
+            raise DevPlaneError("invalid usage in pipeline result")
         assignments.append(
             AssignmentRun(
                 assignment_id=row["assignment_id"],
@@ -91,6 +114,7 @@ def load_pipeline_run(path: Path) -> PipelineRun:
                 changed_paths=tuple(changed),
                 output_digest=row.get("output_digest"),
                 error=row.get("error"),
+                usage=usage,
             )
         )
     base_commit = data.get("base_commit")
@@ -508,6 +532,12 @@ def run_execution_pipeline(
                 output_digest=digest,
             )
 
+        for item in batch:
+            session = session_map.get(item.assignment_id)
+            if session is not None and session.usage and item.assignment_id in batch_runs:
+                batch_runs[item.assignment_id] = replace(
+                    batch_runs[item.assignment_id], usage=session.usage
+                )
         ordered_batch_runs = [batch_runs[item.assignment_id] for item in batch]
         all_results.extend(ordered_batch_runs)
         if failed:
