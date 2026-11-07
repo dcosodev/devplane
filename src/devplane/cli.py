@@ -58,6 +58,7 @@ from .pipeline import (
     integrate_pipeline,
     load_pipeline_run,
     run_execution_pipeline,
+    total_usage,
     write_pipeline_run,
 )
 from .sdd import (
@@ -1080,7 +1081,11 @@ def implement(
                         **asdict(assignment),
                     },
                 )
-            typer.echo(json.dumps(asdict(pipeline_result), indent=2, sort_keys=True))
+            summary = asdict(pipeline_result)
+            usage_total = total_usage(pipeline_result.assignments)
+            if usage_total:
+                summary["usage_total"] = usage_total
+            typer.echo(json.dumps(summary, indent=2, sort_keys=True))
             if pipeline_result.status != "completed":
                 raise typer.Exit(1)
             return
@@ -1191,7 +1196,10 @@ def _integrate_run(project: Path, run_id: str) -> dict[str, object]:
             backlog_review = mark_ready_for_review(project, plan)
         else:
             # A Spec Kit feature run may be linked to backlog stories (backlog specify).
-            backlog_review = mark_feature_stories_review(project, run_id) or None
+            feature_scope = sorted(
+                {path for item in plan.assignments for path in item.allowed_paths}
+            )
+            backlog_review = mark_feature_stories_review(project, run_id, feature_scope) or None
     except DevPlaneError as exc:
         backlog_error = str(exc)
     _append_audit(

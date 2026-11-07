@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -670,3 +671,33 @@ def test_creating_a_worktree_rejects_a_dirty_project_naming_the_files(tmp_path: 
 
     with pytest.raises(DevPlaneError, match=r"clean git worktree.*\?\? stray\.txt"):
         create_worktree(project, "dirty-create", "task", base)
+
+
+def test_usage_survives_the_result_file(tmp_path: Path) -> None:
+    from devplane.pipeline import (
+        AssignmentRun,
+        PipelineRun,
+        load_pipeline_run,
+        write_pipeline_run,
+    )
+
+    commit = "a" * 40
+    run = PipelineRun(
+        "r1",
+        "completed",
+        commit,
+        None,
+        None,
+        None,
+        (AssignmentRun("a", "A", "completed", usage={"output_tokens": 5, "cost_usd": 0.1}),),
+    )
+    path = tmp_path / "result.json"
+    write_pipeline_run(run, path)
+
+    assert load_pipeline_run(path).assignments[0].usage == {"output_tokens": 5, "cost_usd": 0.1}
+
+    data = json.loads(path.read_text())
+    data["assignments"][0]["usage"] = {"output_tokens": "many"}
+    path.write_text(json.dumps(data))
+    with pytest.raises(DevPlaneError, match="usage"):
+        load_pipeline_run(path)

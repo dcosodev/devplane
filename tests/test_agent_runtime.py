@@ -676,3 +676,85 @@ def test_verify_does_nothing_when_no_hermes_guard_was_requested() -> None:
     verify_write_guard_ready(AgentRuntimeConfig("codex", "codex", None, None, {}), runner)
 
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# token and cost capture (Claude Code json output)
+# ---------------------------------------------------------------------------
+
+import json as _json
+
+from devplane.agent_runtime import _split_claude_json
+from devplane.pipeline import AssignmentRun, total_usage
+
+
+def test_claude_sessions_ask_for_json_output() -> None:
+    request = SessionRequest("t1", "implement task", Path("/tmp/work"))
+    config = AgentRuntimeConfig("claude", "claude", None, None, {})
+
+    args = build_agent_args(request, config)
+
+    assert args[args.index("--output-format") + 1] == "json"
+
+
+def test_claude_json_is_split_into_reply_and_usage() -> None:
+    payload = _json.dumps(
+        {
+            "result": "done",
+            "total_cost_usd": 0.1234567,
+            "usage": {
+                "input_tokens": 3,
+                "output_tokens": 40,
+                "cache_read_input_tokens": 900,
+                "cache_creation_input_tokens": 100,
+                "service_tier": "standard",
+            },
+        }
+    )
+
+    text, usage = _split_claude_json(payload)
+
+    assert text == "done"
+    assert usage == {
+        "input_tokens": 3,
+        "output_tokens": 40,
+        "cache_read_tokens": 900,
+        "cache_creation_tokens": 100,
+        "cost_usd": 0.123457,
+    }
+
+
+@pytest.mark.parametrize("stdout", ["plain text", "[1, 2]", "", '{"usage": {"input_tokens": true}}'])
+def test_unexpected_claude_output_is_kept_and_reports_no_usage(stdout: str) -> None:
+    text, usage = _split_claude_json(stdout)
+
+    assert text == stdout
+    assert usage is None
+
+
+def test_run_sessions_attaches_usage_for_claude_only() -> None:
+    def runner(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        body = _json.dumps({"result": "ok", "usage": {"output_tokens": 7}})
+        return subprocess.CompletedProcess(args, 0, stdout=body, stderr="")
+
+    request = [SessionRequest("one", "go", Path("/tmp/one"))]
+    claude = run_sessions(
+        request, 1, runtime=AgentRuntimeConfig("claude", "claude", None, None, {}), runner=runner
+    )
+    codex = run_sessions(
+        request, 1, runtime=AgentRuntimeConfig("codex", "codex", None, None, {}), runner=runner
+    )
+
+    assert (claude[0].stdout, claude[0].usage) == ("ok", {"output_tokens": 7})
+    assert codex[0].usage is None and codex[0].stdout.startswith("{")
+
+
+def test_total_usage_adds_only_what_was_reported() -> None:
+    runs = (
+        AssignmentRun("a", "A", "completed", usage={"output_tokens": 5, "cost_usd": 0.1}),
+        AssignmentRun("b", "B", "completed"),
+        AssignmentRun("c", "C", "failed", usage={"output_tokens": 2, "cost_usd": 0.2}),
+    )
+
+    assert total_usage(runs) == {"output_tokens": 7, "cost_usd": 0.3}
+    assert total_usage(runs[1:2]) is None
