@@ -291,7 +291,7 @@ def plan_batches(backlog: Backlog, *, max_parallel: int) -> Plan:
 
     Stories in one batch have pairwise disjoint write scopes. A story whose
     scope overlaps a story already in progress or in review is deferred out of
-    every batch until that work is done.
+    every batch until that work is done, unless it depends on that story.
     """
     if (
         not isinstance(max_parallel, int)
@@ -310,6 +310,8 @@ def plan_batches(backlog: Backlog, *, max_parallel: int) -> Plan:
     remaining: list[Story] = []
     for story in ready_stories(backlog):
         for active in occupying:
+            if active.id in story.depends_on:
+                continue  # it builds on that integrated work; the dependency orders them
             overlap = _first_overlap(story, active)
             if overlap is not None:
                 state = active.status.replace("_", " ")
