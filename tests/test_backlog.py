@@ -250,6 +250,15 @@ def test_ready_stories_need_ready_status_and_finished_dependencies(
     assert [story.id for story in ready_stories(load_backlog(tmp_path))] == ["US-002"]
 
 
+def test_a_dependency_in_review_lets_dependents_start(tmp_path: Path) -> None:
+    _story(tmp_path, "US-001", status="review", scope=["a.py"])
+    _story(tmp_path, "US-002", status="ready", scope=["b.py"], depends_on=["US-001"])
+    _story(tmp_path, "US-003", status="blocked", scope=["c.py"])
+    _story(tmp_path, "US-004", status="ready", scope=["d.py"], depends_on=["US-003"])
+
+    assert [story.id for story in ready_stories(load_backlog(tmp_path))] == ["US-002"]
+
+
 def test_ready_stories_are_ordered_by_priority_then_id(tmp_path: Path) -> None:
     _story(tmp_path, "US-001", status="ready", scope=["a.py"], priority="low")
     _story(tmp_path, "US-002", status="ready", scope=["b.py"], priority="urgent")

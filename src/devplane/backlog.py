@@ -257,8 +257,15 @@ def _priority_key(story: Story) -> tuple[int, str]:
     return (-PRIORITIES.index(story.priority), story.id)
 
 
+# A story in ``review`` has been integrated and validated; only the person's acceptance is
+# pending, so work that builds on it can start.
+_SATISFIES_DEPENDENCY = frozenset({"review", "done"})
+
+
 def _unfinished_dependencies(backlog: Backlog, story: Story) -> list[str]:
-    return sorted(dep for dep in story.depends_on if backlog.get(dep).status != "done")
+    return sorted(
+        dep for dep in story.depends_on if backlog.get(dep).status not in _SATISFIES_DEPENDENCY
+    )
 
 
 def ready_stories(backlog: Backlog) -> list[Story]:

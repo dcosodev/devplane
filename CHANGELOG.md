@@ -12,6 +12,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- **Behavior change:** a story whose dependencies are in `review` is ready to start; before, only `done` counted, so `devplane backlog run --batches N --integrate` stopped with "no ready stories" after the first wave and waited for a person to accept every story. `review` means the work is integrated and validated, so dependents can build on it; accepting it (`done`) stays a person's decision. Found running a 20-story backlog.
 - The Claude adapter runs with `--output-format json` instead of `text`; the reply text is unchanged, and unexpected output is kept as is.
 - Integrating a Spec Kit feature now also moves the `backlog` stories linked to it (`backlog specify` on a story that is not `ready`) to `review`. A story without `write_scope` takes the paths the feature run was allowed to write.
 
