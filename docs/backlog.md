@@ -76,7 +76,7 @@ devplane integrate spec-US-001
 
 DevPlane records the link in its own commit, `chore(backlog): link US-001 to feature spec-US-001`, which contains only the story file (anything else you have staged stays out of it). If the `specify` phase fails, nothing is linked. A story that already has a `feature` is refused. `backlog show` and `backlog board` display the linked run's status, for example `[feature spec-US-001: spec_pending_approval]`.
 
-When a linked feature is integrated, its `ready` and `in_progress` stories move to `review` in a follow-up commit (`chore(backlog): ready for review US-001 (feature spec-US-001)`); a story still in `backlog` is left alone. The story's own `write_scope` and `validation` are not used on this path: the scopes come from the approved `tasks.md`.
+When a linked feature is integrated, its `backlog`, `ready` and `in_progress` stories move to `review` in a follow-up commit (`chore(backlog): ready for review US-001 (feature spec-US-001)`). A story that has no `write_scope` (it never had to be `ready`) takes the paths the feature run was allowed to write; one that has its own keeps it. The story's own `validation` is not used on this path: the checks come from the approved `tasks.md`.
 
 ## Statuses
 
@@ -109,10 +109,10 @@ All commands accept `--project <root>` and print JSON.
 
 ## Parallel planning
 
-`plan` considers stories that are `ready` with every dependency `done`:
+`plan` considers stories that are `ready` with every dependency in `review` or `done` (`review` means the work is integrated and validated; only your acceptance is pending):
 
 - Stories in the same batch have pairwise disjoint write scopes, decided exactly by the scope grammar rather than by prefix approximation.
-- A story whose scope overlaps another story that is `in_progress` or in `review` is left out of every batch, with the overlap reported under `deferred`.
+- A story whose scope overlaps another story that is `in_progress` or in `review` is left out of every batch, with the overlap reported under `deferred`. The exception is a story it depends on: that one is integrated and already orders the two, so declare `depends_on` when a story extends files another story wrote.
 - A story that overlaps a candidate already in the batch moves to a later batch, again with the reason.
 - `--max-parallel` caps a batch; the rest wait in later batches.
 - Stories waiting on unfinished dependencies are listed under `waiting`.
@@ -149,7 +149,7 @@ By default `run` handles one batch and leaves integration to you. `--batches N -
 devplane backlog run --max-parallel 2 --batches 5 --integrate --run-id sprint
 ```
 
-Wave run ids are `<run-id>-1`, `<run-id>-2`, and so on. The chain stops at the first failure (a failed wave, a failed integration, or a failed backlog update), when no story is ready, or at the batch limit; the JSON output lists every wave and the reason it stopped. `--integrate` skips the manual review between waves, so use it for work whose validation you trust. Stories that overlap one that is only in `review` wait until it is `done`, and stories whose dependencies are not `done` wait too, so a chain usually covers independent stories.
+Wave run ids are `<run-id>-1`, `<run-id>-2`, and so on. The chain stops at the first failure (a failed wave, a failed integration, or a failed backlog update), when no story is ready, or at the batch limit; the JSON output lists every wave and the reason it stopped. `--integrate` skips the manual review between waves, so use it for work whose validation you trust. Stories that overlap one that is only in `review` wait until it is `done`, unless they depend on it. Stories whose dependencies are not yet in `review` or `done` wait too, so a chain follows the dependency graph. Stories whose files are disjoint can still depend on each other's behavior; the combined validation after each wave catches that, and a failed wave leaves its stories `in_progress` (return them to `ready` with `backlog status` once fixed).
 
 Limits: one batch per invocation unless chained; the backlog is not updated until `integrate`, so a failed run is never marked as finished; see [Audit trail](#audit-trail).
 

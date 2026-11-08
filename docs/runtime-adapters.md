@@ -165,6 +165,8 @@ After the CLI exits, DevPlane independently checks the commit, dirty state, chan
 
 ## What support means
 
+Claude Code sessions report their usage: `implement` and `backlog run` record input, output and cache tokens and the cost in dollars per assignment (in `result.json` and the audit log) and print a `usage_total`. The other adapters record none, and the Spec Kit phases run inside the `specify` CLI and are not measured.
+
 Automated tests verify argv construction, prompt isolation, runtime selection, concurrency, error conversion, and control-plane wiring. CI does not authenticate to model providers or spend tokens. Real execution therefore also depends on:
 
 - the CLI version installed by the operator;
