@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-08
+
 ### Added
 
 - Token and cost capture for Claude Code sessions. `implement` and `backlog run` now read Claude Code's JSON output and record, per assignment, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens` and `cost_usd` in `result.json` and in the `pipeline.assignment` audit events, and print a `usage_total` for the run. Only Claude Code reports usage; other adapters record none. The Spec Kit phases (`specify`, `plan`, `tasks`) run inside the `specify` CLI and are not measured.
@@ -16,7 +18,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - **Behavior change:** a ready story is no longer deferred because its write scope overlaps the story it depends on, even while that story waits in `review`; its dependency already orders them, and the work is integrated. Other overlaps with in-progress or review stories still defer it. Found running a 20-story backlog, where two stories that extend a module written by their dependency never started.
 - The Claude adapter runs with `--output-format json` instead of `text`; the reply text is unchanged, and unexpected output is kept as is.
 - Integrating a Spec Kit feature now also moves the `backlog` stories linked to it (`backlog specify` on a story that is not `ready`) to `review`. A story without `write_scope` takes the paths the feature run was allowed to write.
-
 - **Behavior change:** user-story phases of an approved `tasks.md` whose write scopes overlap (typically two stories that both edit one module) no longer make `plan-execution` and `checkpoint` fail with "overlapping write scope". They are planned as consecutive waves, in task order, each depending on the previous one; phases with disjoint scopes still run in parallel. Found running a real Spec Kit feature end to end.
 
 ### Fixed
@@ -155,7 +156,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Rejects path and symlink escapes, malformed Git identifiers, execution-plan drift, out-of-scope writes, governance changes, dirty worktrees, and changed integration bases.
 - Uses safe YAML loading, argument-array subprocesses with `shell=False`, non-interactive child processes, and digest-only handling for private feature descriptions.
 
-[Unreleased]: https://github.com/dcosodev/devplane/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/dcosodev/devplane/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/dcosodev/devplane/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/dcosodev/devplane/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/dcosodev/devplane/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/dcosodev/devplane/compare/v0.2.2...v0.3.0
