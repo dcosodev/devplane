@@ -259,6 +259,17 @@ def test_a_dependency_in_review_lets_dependents_start(tmp_path: Path) -> None:
     assert [story.id for story in ready_stories(load_backlog(tmp_path))] == ["US-002"]
 
 
+def test_a_story_may_overlap_the_review_story_it_depends_on(tmp_path: Path) -> None:
+    _story(tmp_path, "US-001", status="review", scope=["a.py"])
+    _story(tmp_path, "US-002", status="ready", scope=["a.py"], depends_on=["US-001"])
+    _story(tmp_path, "US-003", status="ready", scope=["a.py"])
+
+    plan = plan_batches(load_backlog(tmp_path), max_parallel=2)
+
+    assert [[story.id for story in batch] for batch in plan.batches] == [["US-002"]]
+    assert plan.deferred == {"US-003": "overlaps US-001 (review) on a.py vs a.py"}
+
+
 def test_ready_stories_are_ordered_by_priority_then_id(tmp_path: Path) -> None:
     _story(tmp_path, "US-001", status="ready", scope=["a.py"], priority="low")
     _story(tmp_path, "US-002", status="ready", scope=["b.py"], priority="urgent")
